@@ -19,8 +19,12 @@ window.addEventListener('DOMContentLoaded', () => {
 contextBridge.exposeInMainWorld('forfree', {
   isDesktop: true,
 
-  /** 弹出保存框，写文件，然后自动在资源管理器里选中它 */
-  saveAndReveal: (name, bytes) => ipcRenderer.invoke('ff:save-and-reveal', { name: name, bytes: bytes }),
+  /** 保存文件并打开文件夹。ask=true 弹「另存为」，ask=false 直接存到「下载」文件夹 */
+  saveAndReveal: (name, bytes, ask) =>
+    ipcRenderer.invoke('ff:save-and-reveal', { name: name, bytes: bytes, ask: !!ask }),
+
+  /** 打开程序自己所在的文件夹（方便把 exe 拷给别人） */
+  openAppFolder: () => ipcRenderer.invoke('ff:open-app-folder'),
 
   /** 把内容写到一个临时文件，返回路径（供系统原生拖拽用） */
   prepareFile: (name, bytes) => ipcRenderer.invoke('ff:prepare-file', { name: name, bytes: bytes }),

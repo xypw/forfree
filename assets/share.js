@@ -81,19 +81,28 @@
 
     if (d) {
       ways.push(
-        '<div class="sh-way">' +
-        '<div class="sw-t"><strong>拖到微信 / QQ</strong><span>按住右边的图标，拖到聊天窗口松手就行</span></div>' +
-        '<div class="sw-drag" id="shDrag" draggable="true" title="按住拖到微信">' +
-        '<span class="sd-ico">' + ctx.file.meta.ico + '</span><span>拖我</span></div>' +
+        '<div class="sh-way primary">' +
+        '<div class="sw-t"><strong>保存并打开文件夹</strong><span>存到「下载」文件夹后直接跳过去并选中该文件，' +
+        '在那里按 Ctrl+C，到微信里 Ctrl+V 就能发出去</span></div>' +
+        '<button class="primary-btn" id="shSaveOpen">打开文件夹</button>' +
         '</div>');
     }
 
     ways.push(
       '<div class="sh-way">' +
       '<div class="sw-t"><strong>导出到电脑</strong><span>' +
-      (d ? '存好后自动弹出文件夹并选中文件，拖进微信即可' : '保存到下载文件夹') + '</span></div>' +
+      (d ? '自己选保存位置' : '保存到下载文件夹') + '</span></div>' +
       '<button class="ghost-btn" id="shSave">导出 ' + ctx.file.meta.ext.toUpperCase() + '</button>' +
       '</div>');
+
+    if (d) {
+      ways.push(
+        '<div class="sh-way">' +
+        '<div class="sw-t"><strong>拖到微信 / QQ</strong><span>按住右边的图标，拖到聊天窗口松手就行</span></div>' +
+        '<div class="sw-drag" id="shDrag" draggable="true" title="按住拖到微信">' +
+        '<span class="sd-ico">' + ctx.file.meta.ico + '</span><span>拖我</span></div>' +
+        '</div>');
+    }
 
     ways.push(
       '<div class="sh-way">' +
@@ -110,11 +119,12 @@
         if (ctx.tmpPath) global.forfree.startDrag(ctx.tmpPath);
         else FW.toast('文件还没准备好，稍等一下再拖');
       });
-      // 鼠标按下时若还没准备好，补一次
       dragEl.addEventListener('mousedown', () => { if (!ctx.tmpPath) prepareTemp(); });
     }
 
-    $('#shSave', modal).addEventListener('click', doSave);
+    const so = $('#shSaveOpen', modal);
+    if (so) so.addEventListener('click', () => doSave(false));
+    $('#shSave', modal).addEventListener('click', () => doSave(true));
     $('#shCopy', modal).addEventListener('click', doCopy);
   }
 
@@ -128,16 +138,16 @@
     }
   }
 
-  async function doSave() {
+  async function doSave(ask) {
     if (isDesktop()) {
       try {
-        const r = await global.forfree.saveAndReveal(ctx.file.name, ctx.file.bytes);
+        const r = await global.forfree.saveAndReveal(ctx.file.name, ctx.file.bytes, ask);
         if (r && r.ok) {
-          FW.toast('已保存并在文件夹中选中：' + r.path, 4200);
+          FW.toast('已保存并打开文件夹：' + r.path + '　在那里按 Ctrl+C，到微信里 Ctrl+V 就能发出去', 6000);
         } else if (r && r.canceled) {
           FW.toast('已取消');
         } else {
-          FW.toast('保存失败');
+          FW.toast('保存失败' + (r && r.error ? '：' + r.error : ''), 3600);
         }
       } catch (e) {
         FW.toast('保存失败：' + e.message, 3600);
@@ -193,8 +203,8 @@
       '<span>' + m.label + ' · ' + FW.fmtSize(file.bytes.length) + ' · 共 ' + (ctx.text.replace(/\s/g, '').length) + ' 字</span></div>';
 
     $('#shNote', modal).textContent = isDesktop()
-      ? '提示：拖拽是最快的方式 —— 按住「拖我」不放，移到微信聊天窗口上松手即可发送。'
-      : '网页版只能下载文件或复制文本。装桌面版可以直接把文件拖进微信。';
+      ? '最省事的做法：点「打开文件夹」→ 系统会跳到文件所在的文件夹并选中它 → 按 Ctrl+C → 到微信里 Ctrl+V。'
+      : '网页版只能下载文件或复制文本。装桌面版可以直接把文件拖进微信，或者一键跳到文件夹。';
 
     renderWays();
     modal.classList.add('on');

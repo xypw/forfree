@@ -514,6 +514,8 @@ async function runSelfTest() {
       SHARE.open(doc.id);
       var ways = document.querySelectorAll('#shWays .sh-way').length;
       var hasDrag = !!document.querySelector('#shDrag');
+      var hasPrimary = !!document.querySelector('#shSaveOpen');
+      var titles = Array.prototype.map.call(document.querySelectorAll('#shWays .sw-t strong'), function(x){ return x.textContent; });
       // 等临时文件准备好
       return new Promise(function(res){
         setTimeout(function(){
@@ -521,6 +523,14 @@ async function runSelfTest() {
             panelOpen: document.querySelector('#shareMask').classList.contains('on'),
             ways: ways,
             dragZone: hasDrag,
+            primaryBtn: hasPrimary,
+            titles: titles,
+            bridge: {
+              saveAndReveal: typeof forfree.saveAndReveal,
+              openAppFolder: typeof forfree.openAppFolder,
+              startDrag: typeof forfree.startDrag,
+              copyText: typeof forfree.copyText
+            },
             fileName: (document.querySelector('#shFile strong') || {}).textContent || ''
           });
           res(window.__shDone);
@@ -581,19 +591,56 @@ const ICON_PATH = path.join(__dirname, 'build', 'icon.png');
 
 function setupShareIpc() {
 
-  // 弹出保存框 → 写文件 → 在资源管理器里选中
-  ipcMain.handle('ff:save-and-reveal', async (evt, { name, bytes }) => {
+  // 保存文件并打开文件夹。
+  // ask=true 时先弹「另存为」；ask=false 直接存到「下载」文件夹（同名自动加序号），
+  // 省掉对话框，真正做到「点一下就跳过去」。
+  ipcMain.handle('ff:save-and-reveal', async (evt, { name, bytes, ask }) => {
     const win = BrowserWindow.fromWebContents(evt.sender);
     const safe = String(name || '文件').replace(/[\\/:*?"<>|]/g, '_');
-    const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: '保存文件',
-      defaultPath: path.join(app.getPath('downloads'), safe),
-      buttonLabel: '保存'
-    });
-    if (canceled || !filePath) return { ok: false, canceled: true };
-    fs.writeFileSync(filePath, Buffer.from(bytes));
+    let filePath;
+
+    if (ask) {
+      const r = await dialog.showSaveDialog(win, {
+        title: '另存为',
+        defaultPath: path.join(app.getPath('downloads'), safe),
+        buttonLabel: '保存'
+      });
+      if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+      filePath = r.filePath;
+    } else {
+      const dir = app.getPath('downloads');
+      filePath = path.join(dir, safe);
+      if (fs.existsSync(filePath)) {
+        const ext = path.extname(safe);
+        const base = path.basename(safe, ext);
+        let i = 2;
+        while (fs.existsSync(path.join(dir, base + ' (' + i + ')' + ext))) i++;
+        filePath = path.join(dir, base + ' (' + i + ')' + ext);
+      }
+    }
+
+    try {
+      fs.writeFileSync(filePath, Buffer.from(bytes));
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
     try { shell.showItemInFolder(filePath); } catch (e) {}
     return { ok: true, path: filePath };
+  });
+
+  // 打开程序自己所在的文件夹 —— 方便把 exe 拷给别人
+  ipcMain.handle('ff:open-app-folder', async () => {
+    // 免安装版会把自己解压到临时目录，process.execPath 指向那里；
+    // 用户实际存放 exe 的目录在 PORTABLE_EXECUTABLE_DIR 里（由 portable 启动器设置）
+    const dir = process.env.PORTABLE_EXECUTABLE_DIR;
+    try {
+      if (dir && fs.existsSync(dir)) { shell.openPath(dir); return { ok: true, path: dir }; }
+      if (!app.isPackaged) { shell.openPath(__dirname); return { ok: true, path: __dirname }; }
+      shell.showItemInFolder(process.execPath);
+      return { ok: true, path: process.execPath };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   });
 
   // 写一个临时文件，供原生拖拽使用

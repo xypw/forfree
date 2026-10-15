@@ -548,7 +548,20 @@
 
     $('#btnOpenFile').addEventListener('click', openAnyFile);
     $('#btnConvert').addEventListener('click', showConvert);
-    $('#btnAbout').addEventListener('click', () => $('#aboutMask').classList.add('on'));
+    $('#btnAbout').addEventListener('click', () => {
+      const hasBridge = !!(global.forfree && global.forfree.isDesktop);
+      const b = $('#btnAppFolder');
+      if (b) b.style.display = hasBridge ? 'inline-block' : 'none';
+      const h = $('#appFolderHint');
+      if (h) h.textContent = hasBridge ? '把整个文件夹拷给别人，对方双击 exe 就能用' : '';
+      $('#aboutMask').classList.add('on');
+    });
+    $('#btnAppFolder').addEventListener('click', async () => {
+      if (!(global.forfree && global.forfree.openAppFolder)) return;
+      const r = await global.forfree.openAppFolder();
+      if (r && r.ok) FW.toast('已打开：' + r.path, 4000);
+      else FW.toast('打开失败' + (r && r.error ? '：' + r.error : ''), 3600);
+    });
     $('#btnDiff').addEventListener('click', () => global.DIFF.open());
     $('#btnTrash').addEventListener('click', () => global.TRASH.open());
     $('#btnImage').addEventListener('click', () => global.IMGTOOLS.open());
