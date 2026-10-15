@@ -74,6 +74,7 @@
         '<span>' + m.name + ' · 修改于 ' + FW.fmtTime(d.updated) + '</span></div>' +
         '<div class="ri-actions">' +
         '<button class="mini-btn" data-act="open">打开</button>' +
+        '<button class="mini-btn" data-act="newwin">新窗口</button>' +
         '<button class="mini-btn" data-act="share">发给朋友</button>' +
         '<button class="mini-btn" data-act="history">版本' +
         (Store.versionCount(d.id) ? ' ' + Store.versionCount(d.id) : '') + '</button>' +
@@ -546,6 +547,8 @@
         global.HISTORY.openPanel(id);
       } else if (act === 'share') {
         global.SHARE.open(id);
+      } else if (act === 'newwin') {
+        openInNewWindow(id);
       } else if (act === 'diff') {
         global.DIFF.open({ leftKey: 'd:' + id });
       }
@@ -602,6 +605,7 @@
       else if (a === 'redo') ed && ed.redo();
       else if (a === 'history') global.HISTORY.openPanel(currentDoc ? currentDoc.id : null);
       else if (a === 'share') global.SHARE.open(null);
+      else if (a === 'newwin') openInNewWindow(null);
       else if (a === 'export') openExport();
     }));
     $('#btnFullscreen').addEventListener('click', () => {
@@ -659,6 +663,14 @@
 
   /** 启动时恢复上次编辑的文档 */
   function restoreLastDoc() {
+    // 先看 URL 上有没有指定文档（多窗口打开时会带 ?doc=xxx）
+    let urlDoc = null;
+    try { urlDoc = new URLSearchParams(location.search).get('doc'); } catch (e) {}
+    if (urlDoc) {
+      const d0 = Store.get(urlDoc);
+      if (d0) { openDoc(d0); return; }
+    }
+
     let s;
     try { s = Store.settings(); } catch (e) { return; }
     if (s.autoOpenLast === false) return;      // 用户在「关于」里关掉了
@@ -668,6 +680,24 @@
     if (!d) { try { Store.setSetting('lastDocId', null); } catch (e) {} return; }
     openDoc(d);
     FW.toast('已恢复上次编辑的文档', 2400);
+  }
+
+  /** 在另一个窗口打开指定文档 */
+  async function openInNewWindow(id) {
+    if (global.forfree && global.forfree.openInNewWindow) {
+      const r = await global.forfree.openInNewWindow(id);
+      if (r && r.ok) { FW.toast('已在新窗口打开'); return; }
+      FW.toast('新窗口打开失败' + (r && r.error ? '：' + r.error : ''), 3200);
+      return;
+    }
+    // 网页版：开一个新标签页
+    try {
+      const url = location.pathname + '?doc=' + encodeURIComponent(id);
+      const w = global.open(url, '_blank');
+      if (!w) FW.toast('浏览器拦截了新标签页，请允许弹出窗口');
+    } catch (e) {
+      FW.toast('新窗口打开失败：' + e.message, 3200);
+    }
   }
 
   async function openAnyFile() {
@@ -779,4 +809,5 @@
   };
   app.refreshStatus = refreshStatus;
   app.restoreLastDoc = restoreLastDoc;
+  app.openInNewWindow = openInNewWindow;
 })(window);

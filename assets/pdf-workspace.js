@@ -929,15 +929,79 @@
       const res = await global.PDFCONV.fromSession(state, target, (i, n) => {
         if (i === n || i % 5 === 0) FW.toast('正在解析第 ' + i + '/' + n + ' 页…', 1500);
       });
-      const mime = target === 'docx'
-        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-      FW.downloadBytes(state.title + '.' + target, res.bytes, mime);
-      FW.toast('已生成 ' + label + ' 文件（' + state.pages.length + ' 页）', 3200);
+
+      // 顺便解析成可编辑的文档对象 —— 转完可以直接接着改，不用先下载再重新打开
+      let doc = null;
+      try {
+        if (target === 'docx') {
+          const r = global.OFFICE.parseDocx(res.bytes);
+          doc = FW.createDoc('doc');
+          doc.title = state.title;
+          doc.data.html = r.html || '<p></p>';
+        } else {
+          const r = global.OFFICE.parseXlsx(res.bytes);
+          doc = FW.createDoc('sheet');
+          doc.title = state.title;
+          doc.data.sheets = r.sheets && r.sheets.length ? r.sheets : doc.data.sheets;
+          doc.data.active = 0;
+        }
+      } catch (e) { console.warn('转换结果回读失败，只能下载', e); }
+
+      showConvertResult(doc, res.bytes, target, label);
     } catch (e) {
       console.error(e);
       FW.toast('转换失败：' + e.message, 3600);
     }
+  }
+
+  /** 转换完成后的结果窗口：可以直接打开编辑，也可以只下载 */
+  function showConvertResult(doc, bytes, target, label) {
+    let m = document.getElementById('convResultMask');
+    if (!m) {
+      m = document.createElement('div');
+      m.className = 'modal-mask';
+      m.id = 'convResultMask';
+      document.body.appendChild(m);
+      m.addEventListener('click', (e) => { if (e.target === m) m.classList.remove('on'); });
+    }
+    const mime = target === 'docx'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const editable = !!doc;
+
+    m.innerHTML =
+      '<div class="modal"><div class="modal-head"><h3>转换完成</h3>' +
+      '<button class="modal-x" data-cv-close>×</button></div>' +
+      '<div class="modal-body">' +
+      '<p style="font-size:13.5px;margin-bottom:6px">已生成 <b>' + label + ' 文件</b>' +
+      '（' + state.pages.length + ' 页 · ' + FW.fmtSize(bytes.length) + '）</p>' +
+      '<p class="muted" style="font-size:12px;line-height:1.8;margin-bottom:14px">' +
+      (editable
+        ? '可以直接打开编辑 —— 改完再导出回 .' + target + ' 或发给朋友，不用先下载再重新打开。'
+        : '这个文件可以下载后用其他软件打开。') +
+      '</p>' +
+      '<div class="cv-actions">' +
+      (editable ? '<button class="primary-btn" id="cvEdit">打开编辑</button>' : '') +
+      '<button class="' + (editable ? 'ghost-btn' : 'primary-btn') + '" id="cvDownload">下载文件</button>' +
+      '<button class="ghost-btn" data-cv-close>关闭</button>' +
+      '</div></div></div>';
+
+    m.querySelectorAll('[data-cv-close]').forEach((b) => b.addEventListener('click', () => m.classList.remove('on')));
+    m.querySelector('#cvDownload').addEventListener('click', () => {
+      FW.downloadBytes(state.title + '.' + target, bytes, mime);
+      FW.toast('已下载 ' + label + ' 文件');
+      m.classList.remove('on');
+    });
+    const editBtn = m.querySelector('#cvEdit');
+    if (editBtn) {
+      editBtn.addEventListener('click', () => {
+        m.classList.remove('on');
+        FW.Store.upsert(doc);
+        FW.app.openDoc(doc);
+        FW.toast('已打开转换结果，可以直接编辑了', 3200);
+      });
+    }
+    m.classList.add('on');
   }
 
   function addWatermark() {    if (!state) return;

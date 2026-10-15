@@ -30,6 +30,7 @@ if (SELF_TEST) {
 
 let mainWindow = null;
 let server = null;
+let appBaseUrl = null;   // 内置服务的地址，多窗口要用
 
 /* ---------------- 内置静态服务器 ---------------- */
 const MIME = {
@@ -103,6 +104,7 @@ async function createWindow() {
   let baseUrl;
   try {
     baseUrl = await startServer();
+    appBaseUrl = baseUrl;
   } catch (e) {
     dialog.showErrorBox('ForFree 启动失败', '无法启动内置服务：\n' + e.message);
     app.quit();
@@ -563,6 +565,56 @@ async function runSelfTest() {
       (prepOk ? '  (' + fs.statSync(prepPath).size + ' 字节)' : ''));
     await js(`SHARE.close(); 'ok'`);
 
+    // PDF 转 Word → 结果窗口 → 直接打开编辑
+    // 先换回有文字内容的 sample.pdf（之前那份表单 PDF 本身没有正文文字）
+    await js(`(function(){
+      var x = new XMLHttpRequest(); x.open('GET','samples/sample.pdf',false);
+      x.overrideMimeType('text/plain; charset=x-user-defined'); x.send();
+      var s = x.responseText, u = new Uint8Array(s.length);
+      for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 0xff;
+      FW.app.openPdf(u, '样例文档.pdf');
+      return 'ok';
+    })()`);
+    await new Promise((r) => setTimeout(r, 3000));
+    await js(`FW.Editors.pdf.cmd('toDocx'); 'ok'`);
+    await new Promise((r) => setTimeout(r, 5000));
+    const cvInfo = await js(`(function(){
+      var m = document.querySelector('#convResultMask');
+      var p = m ? m.querySelector('.modal-body p') : null;
+      return JSON.stringify({
+        dialogOpen: !!(m && m.classList.contains('on')),
+        hasEditBtn: !!document.querySelector('#cvEdit'),
+        hasDownloadBtn: !!document.querySelector('#cvDownload'),
+        summary: p ? p.textContent.trim() : ''
+      });
+    })()`);
+    console.log('  转换结果窗口：' + cvInfo);
+    await shoot('17-转换结果窗口');
+
+    await js(`document.querySelector('#cvEdit').click(); 'ok'`);
+    await new Promise((r) => setTimeout(r, 1500));
+    const afterEdit = await js(`(function(){
+      var d = FW.app.currentDoc();
+      var active = document.querySelector('.view.active');
+      return JSON.stringify({
+        type: d ? d.type : null,
+        title: d ? d.title : null,
+        view: active ? active.id : null,
+        bodyLen: d ? (document.querySelector('#docPaper').textContent || '').length : 0
+      });
+    })()`);
+    console.log('  点「打开编辑」后：' + afterEdit);
+    await shoot('18-转换后直接编辑');
+
+    // 新窗口（同时打开多个文件）
+    const winBefore = BrowserWindow.getAllWindows().length;
+    await js(`FW.app.openInNewWindow(null); 'ok'`);
+    await new Promise((r) => setTimeout(r, 3000));
+    const winAfter = BrowserWindow.getAllWindows().length;
+    console.log('  新窗口：窗口数 ' + winBefore + ' → ' + winAfter + (winAfter > winBefore ? '  ✓' : '  ✗'));
+    BrowserWindow.getAllWindows().forEach((w) => { if (w !== mainWindow) { try { w.close(); } catch (e) {} } });
+    await new Promise((r) => setTimeout(r, 800));
+
     // 导出能力
     const exports2 = await js(`(function(){
       var out=[];
@@ -698,6 +750,36 @@ function setupShareIpc() {
   ipcMain.handle('ff:reveal', async (evt, p) => {
     if (p && fs.existsSync(p)) { try { shell.showItemInFolder(p); } catch (e) {} }
     return true;
+  });
+
+  // 再开一个窗口打开另一篇文档（同时编辑多个文件）
+  ipcMain.handle('ff:open-window', async (evt, docId) => {
+    if (!appBaseUrl) return { ok: false, error: '服务未就绪' };
+    try {
+      const w = new BrowserWindow({
+        width: 1280,
+        height: 860,
+        minWidth: 900,
+        minHeight: 600,
+        backgroundColor: '#F2F3F5',
+        show: false,
+        title: 'ForFree 办公套件',
+        icon: fs.existsSync(ICON_PATH) ? ICON_PATH : undefined,
+        webPreferences: {
+          preload: path.join(__dirname, 'preload.js'),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          spellcheck: false,
+          backgroundThrottling: false
+        }
+      });
+      w.once('ready-to-show', () => w.show());
+      w.loadURL(appBaseUrl + '/index.html' + (docId ? '?doc=' + encodeURIComponent(docId) : ''));
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   });
 }
 

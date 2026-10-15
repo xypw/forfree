@@ -36,5 +36,8 @@ contextBridge.exposeInMainWorld('forfree', {
   copyText: (text) => ipcRenderer.send('ff:copy-text', text),
 
   /** 在资源管理器里显示某个路径 */
-  reveal: (p) => ipcRenderer.invoke('ff:reveal', p)
+  reveal: (p) => ipcRenderer.invoke('ff:reveal', p),
+
+  /** 再开一个窗口打开另一篇文档 */
+  openInNewWindow: (docId) => ipcRenderer.invoke('ff:open-window', docId)
 });
