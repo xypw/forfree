@@ -323,7 +323,7 @@
     },
 
     exports: [
-      { id: 'docx', icon: 'W', title: 'Word 文档 (.docx)', desc: '生成真实 Office 文件，可用 WPS / Word 打开', ext: 'docx' },
+      { id: 'docx', icon: 'W', title: 'Word 文档 (.docx)', desc: '生成真实 Office 文件，可用 Word 打开', ext: 'docx' },
       { id: 'html', icon: '<>', title: '网页 (.html)', desc: '保留排版样式，可直接用浏览器打开', ext: 'html' },
       { id: 'md', icon: 'M↓', title: 'Markdown (.md)', desc: '转换为纯文本标记格式', ext: 'md' },
       { id: 'txt', icon: 'T', title: '纯文本 (.txt)', desc: '只保留文字内容', ext: 'txt' },

@@ -562,7 +562,7 @@
     },
 
     exports: [
-      { id: 'pptx', icon: 'P', title: 'PowerPoint 演示文稿 (.pptx)', desc: '生成真实 Office 文件，可用 WPS / PPT 打开', ext: 'pptx' },
+      { id: 'pptx', icon: 'P', title: 'PowerPoint 演示文稿 (.pptx)', desc: '生成真实 Office 文件，可用 PowerPoint 打开', ext: 'pptx' },
       { id: 'html', icon: '<>', title: '网页幻灯片 (.html)', desc: '所有页面排列成网页，可直接分享', ext: 'html' },
       { id: 'pdf', icon: 'P', title: '打印 / 另存为 PDF', desc: '调用系统打印输出 PDF', ext: 'pdf' },
       { id: 'png', icon: '🖼', title: '导出当前页为图片 (.png)', desc: '将当前幻灯片渲染为 PNG 图片', ext: 'png' },

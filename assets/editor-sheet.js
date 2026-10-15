@@ -1117,7 +1117,7 @@
 
     exports: [
       { id: 'xlsx', icon: 'X', title: 'Excel 工作簿 (.xlsx)', desc: '生成真实 Office 表格，保留公式与样式', ext: 'xlsx' },
-      { id: 'csv', icon: ',', title: '逗号分隔文本 (.csv)', desc: '纯数据，Excel / WPS / 数据库均可读取', ext: 'csv' },
+      { id: 'csv', icon: ',', title: '逗号分隔文本 (.csv)', desc: '纯数据，Excel 与数据库均可读取', ext: 'csv' },
       { id: 'html', icon: '<>', title: '网页 (.html)', desc: '带样式的表格，浏览器直接打开', ext: 'html' },
       { id: 'pdf', icon: 'P', title: '打印 / 另存为 PDF', desc: '调用系统打印输出 PDF', ext: 'pdf' },
       { id: 'json', icon: '{}', title: 'ForFree 工程文件 (.json)', desc: '无损保存，可再次导入继续编辑', ext: 'json' }
