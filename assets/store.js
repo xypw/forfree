@@ -140,12 +140,16 @@
     },
 
     _write(arr) {
-      this._cache = arr;
+      // 必须先写成功再更新缓存。
+      // 之前是先更新缓存再写，一旦存储写满、setItem 抛异常，
+      // 缓存里就留下了一份「没真正存下去」的数据 ——
+      // 界面显示已保存，用户继续编辑，一刷新全丢。
       try {
         localStorage.setItem(KEY, JSON.stringify(arr));
+        this._cache = arr;
         return true;
       } catch (e) {
-        toast('保存失败：本地存储空间已满，请删除部分旧文档');
+        toast('保存失败：本地存储空间已满，请删除部分旧文档或清空回收站');
         return false;
       }
     },
@@ -159,13 +163,16 @@
     },
 
     upsert(doc) {
-      const arr = this._read();
+      // 必须拷一份再改：_read() 返回的就是缓存数组本身，
+      // 直接 arr[i] = ... 会就地改掉缓存 —— 那样即使 _write 失败，
+      // 缓存里也已经是一份「没真正落盘」的数据了。
+      const arr = this._read().slice();
       const i = arr.findIndex((d) => d.id === doc.id);
       doc.updated = Date.now();
       if (i >= 0) arr[i] = Object.assign({}, arr[i], doc);
       else { doc.created = doc.created || Date.now(); arr.push(doc); }
-      this._write(arr);
-      return doc;
+      // 写失败时返回 null，调用方要据此提示用户，不能假装保存成功
+      return this._write(arr) ? doc : null;
     },
 
     remove(id) {
@@ -327,9 +334,12 @@
       const v = this.getVersion(id, ts);
       if (!doc || !v) return null;
       this.snapshot(doc, '还原前自动备份', { force: true });
-      try { doc.data = JSON.parse(v.data); } catch (e) { return null; }
-      doc.updated = Date.now();
-      this.upsert(doc);
+      let parsed;
+      try { parsed = JSON.parse(v.data); } catch (e) { return null; }
+      const backup = doc.data;
+      doc.data = parsed;
+      const saved = this.upsert(doc);
+      if (!saved) { doc.data = backup; return null; }   // 写失败就回滚，别让界面显示成还原了
       return doc;
     },
 

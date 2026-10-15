@@ -995,8 +995,11 @@
     const editBtn = m.querySelector('#cvEdit');
     if (editBtn) {
       editBtn.addEventListener('click', () => {
+        if (!FW.Store.upsert(doc)) {
+          FW.toast('本地存储已满，暂时无法打开编辑。你可以先「下载文件」再自行打开', 5000);
+          return;
+        }
         m.classList.remove('on');
-        FW.Store.upsert(doc);
         FW.app.openDoc(doc);
         FW.toast('已打开转换结果，可以直接编辑了', 3200);
       });

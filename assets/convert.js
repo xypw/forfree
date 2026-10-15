@@ -225,7 +225,19 @@
         const d = FW.createDoc(obj.type);
         d.title = obj.title || baseName;
         d.data = obj.data;
-        if (obj.type === 'slide') d.data.size = d.data.size || { w: 960, h: 540 };
+        if (obj.type === 'slide') {
+          d.data.size = d.data.size || { w: 960, h: 540 };
+          if (!Array.isArray(d.data.slides) || !d.data.slides.length) {
+            d.data.slides = [{ layout: 'title', bg: null, shapes: [] }];
+          }
+        }
+        if (obj.type === 'sheet') {
+          // 工程文件损坏/被手动编辑导致缺表时兜底，避免后续 sheets[0] 崩溃
+          if (!Array.isArray(d.data.sheets) || !d.data.sheets.length) {
+            d.data.sheets = [{ name: 'Sheet1', cells: {}, cols: {}, rows: {}, colW: 88, rowH: 24 }];
+            d.data.active = 0;
+          }
+        }
         return d;
       }
       throw new Error('不是 ForFree 工程文件');

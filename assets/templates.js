@@ -567,7 +567,10 @@
     d.title = t.name;
     d.data = t.build();
     if (t.type === 'slide' && !d.data.size) d.data.size = { w: 960, h: 540 };
-    FW.Store.upsert(d);
+    if (!FW.Store.upsert(d)) {
+      FW.toast('本地存储已满，无法从模板创建。请先删除一些旧文档', 4600);
+      return null;
+    }
     if (FW.app) FW.app.openDoc(d);
     FW.toast('已从模板创建：' + t.name);
     return d;

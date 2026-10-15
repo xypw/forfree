@@ -989,6 +989,7 @@
       ROWS = Math.max(60, d.data.rows || 60);
       COLS = Math.max(20, d.data.cols || 20);
       sheetIdx = d.data.active || 0;
+      if (sheetIdx < 0 || sheetIdx >= doc.data.sheets.length) sheetIdx = 0;
       sel = { r: 0, c: 0 }; range = null; editing = null;
       render();
       bindEvents();

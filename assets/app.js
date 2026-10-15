@@ -12,6 +12,9 @@
   let saveTimer = null;
   let ribbonTab = {};
 
+  // 每个窗口一个标识，用来区分「这条记录是哪个窗口写的」（多窗口场景）
+  const WINDOW_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
   const app = {
     current: () => currentType,
     refreshStatus,
@@ -213,9 +216,12 @@
     dirty = false;
     refreshStatus();
 
-    // 记住最后打开的文档，下次启动直接进来
+    // 记住最后打开的文档，下次启动直接进来。
+    // 带上窗口标识：多窗口时，A 窗口开着文档、B 窗口回首页，
+    // 不能让 B 把 A 的记录清掉。
     try {
       Store.setSetting('lastDocId', doc.id);
+      Store.setSetting('lastDocOwner', WINDOW_ID);
       Store.setSetting('lastOpenedAt', Date.now());
     } catch (e) {}
   }
@@ -244,7 +250,10 @@
   function newDoc(type) {
     if (type === 'pdf') { openPdf(null, 'PDF 文档'); return; }
     const d = FW.createDoc(type);
-    Store.upsert(d);
+    if (!Store.upsert(d)) {
+      FW.toast('本地存储已满，无法新建文档。请先删除一些旧文档或清空回收站', 4600);
+      return;
+    }
     openDoc(d);
     updateStorageInfo();
     renderRecent($('#homeSearch').value.trim());
@@ -281,7 +290,13 @@
       try { currentDoc.data = ed.getData(); } catch (e) {}
     }
     currentDoc.title = $('#docTitle').value.trim() || '未命名';
-    Store.upsert(currentDoc);
+    // 写失败（本地存储满）时不要谎报「已保存」，也不要再存历史版本占地方
+    const ok = Store.upsert(currentDoc);
+    if (!ok) {
+      dirty = true;
+      setSaveState(false);
+      return;
+    }
     // 自动留存历史版本（内部有 3 分钟节流 + 内容去重）
     try { global.HISTORY.autoSnapshot(currentDoc); } catch (e) {}
     dirty = false;
@@ -653,8 +668,14 @@
     }
     if (dirty && currentType !== 'pdf') save(true);
     currentType = null; currentDoc = null;
-    // 主动回首页就清掉记录，做到「上次退出时看的是什么，下次就回到什么」
-    try { Store.setSetting('lastDocId', null); } catch (e) {}
+    // 只有「是我这个窗口设的记录」才清 —— 否则多窗口下会误清别的窗口的记录
+    try {
+      const s = Store.settings();
+      if (!s.lastDocOwner || s.lastDocOwner === WINDOW_ID) {
+        Store.setSetting('lastDocId', null);
+        Store.setSetting('lastDocOwner', null);
+      }
+    } catch (e) {}
     $$('.app-pane').forEach((p) => p.classList.remove('active'));
     renderRecent($('#homeSearch').value.trim());
     updateStorageInfo();
