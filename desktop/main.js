@@ -6,7 +6,7 @@
    ============================================================ */
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, dialog, session, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, session, nativeImage, clipboard, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -121,10 +121,12 @@ async function createWindow() {
     title: 'ForFree 办公套件',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      spellcheck: false
+      spellcheck: false,
+      backgroundThrottling: false
     }
   });
 
@@ -163,10 +165,15 @@ async function createWindow() {
 
 /* ---------------- 自检：截图 + 输出关键信息（打包验证用） ---------------- */
 async function shoot(name) {
-  // capturePage 抓的是合成器当前帧，界面刚切过视图时可能还是旧帧。
-  // 先强制失效重绘，再等一小会儿，拿到的才是最新画面。
-  try { mainWindow.webContents.invalidate(); } catch (e) {}
-  await new Promise((r) => setTimeout(r, 420));
+  // capturePage 抓的是合成器当前帧。窗口被遮挡时 Chromium 会停止合成，
+  // 抓到的就是好几步之前的旧画面 —— 所以先让窗口获得焦点、强制重绘，再等一会儿。
+  try {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.invalidate();
+  } catch (e) {}
+  await new Promise((r) => setTimeout(r, 700));
   const img = await mainWindow.webContents.capturePage();
   fs.mkdirSync(SHOT_DIR, { recursive: true });
   const file = path.join(SHOT_DIR, name + '.png');
@@ -496,6 +503,56 @@ async function runSelfTest() {
     console.log('  图片压缩结果：' + imgResult);
     await shoot('14-图片处理后');
 
+    // 发给朋友
+    const shareInfo = await js(`(function(){
+      window.__shDone = null;
+      FW.app.newDoc('doc');
+      document.querySelector('#docPaper').innerHTML =
+        '<h1>分享测试文档</h1><p>这是一段用来测试分享功能的正文内容。</p><p>第二段，用来验证复制文本是否完整。</p>';
+      FW.app.save(true);
+      var doc = FW.app.currentDoc();
+      SHARE.open(doc.id);
+      var ways = document.querySelectorAll('#shWays .sh-way').length;
+      var hasDrag = !!document.querySelector('#shDrag');
+      // 等临时文件准备好
+      return new Promise(function(res){
+        setTimeout(function(){
+          window.__shDone = JSON.stringify({
+            panelOpen: document.querySelector('#shareMask').classList.contains('on'),
+            ways: ways,
+            dragZone: hasDrag,
+            fileName: (document.querySelector('#shFile strong') || {}).textContent || ''
+          });
+          res(window.__shDone);
+        }, 1200);
+      });
+    })()`);
+    console.log('  分享面板：' + shareInfo);
+    await new Promise((r) => setTimeout(r, 400));
+    await shoot('15-发给朋友');
+
+    // 验证：复制文本 + 临时文件是否真的写出来了
+    const copyRes = await js(`(function(){
+      document.querySelector('#shCopy').click();
+      return 'clicked';
+    })()`);
+    await new Promise((r) => setTimeout(r, 600));
+    const clipText = clipboard.readText();
+    console.log('  复制文本长度：' + clipText.length + ' 字符，开头：' + JSON.stringify(clipText.slice(0, 24)));
+
+    // 验证：导出并打开文件夹那条路（只测写文件，不弹对话框）
+    const prepRes = await js(`(function(){
+      var f = SHARE.buildFile(FW.app.currentDoc());
+      window.__prepName = f.name;
+      return JSON.stringify({name: f.name, bytes: f.bytes.length});
+    })()`);
+    console.log('  待分享文件：' + prepRes);
+    const prepPath = await js(`forfree.prepareFile(window.__prepName, SHARE.buildFile(FW.app.currentDoc()).bytes).then(function(r){ return r.path; })`);
+    const prepOk = fs.existsSync(prepPath);
+    console.log('  临时文件已写入：' + (prepOk ? '是' : '否') + '  ' + prepPath +
+      (prepOk ? '  (' + fs.statSync(prepPath).size + ' 字节)' : ''));
+    await js(`SHARE.close(); 'ok'`);
+
     // 导出能力
     const exports2 = await js(`(function(){
       var out=[];
@@ -517,6 +574,57 @@ async function runSelfTest() {
     // 留足时间把日志刷到 stdout，否则 Windows 下管道缓冲会吞掉输出
     setTimeout(() => app.quit(), 2000);
   }
+}
+
+/* ---------------- IPC：发给朋友 ---------------- */
+const ICON_PATH = path.join(__dirname, 'build', 'icon.png');
+
+function setupShareIpc() {
+
+  // 弹出保存框 → 写文件 → 在资源管理器里选中
+  ipcMain.handle('ff:save-and-reveal', async (evt, { name, bytes }) => {
+    const win = BrowserWindow.fromWebContents(evt.sender);
+    const safe = String(name || '文件').replace(/[\\/:*?"<>|]/g, '_');
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: '保存文件',
+      defaultPath: path.join(app.getPath('downloads'), safe),
+      buttonLabel: '保存'
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(filePath, Buffer.from(bytes));
+    try { shell.showItemInFolder(filePath); } catch (e) {}
+    return { ok: true, path: filePath };
+  });
+
+  // 写一个临时文件，供原生拖拽使用
+  ipcMain.handle('ff:prepare-file', async (evt, { name, bytes }) => {
+    const safe = String(name || '文件').replace(/[\\/:*?"<>|]/g, '_');
+    const dir = path.join(app.getPath('temp'), 'ForFree-Share');
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, safe);
+    fs.writeFileSync(p, Buffer.from(bytes));
+    return { path: p };
+  });
+
+  // 启动 Electron 原生拖拽 —— Chromium 会用真正的 IDataObject（含 CF_HDROP）
+  ipcMain.on('ff:start-drag', (evt, filePath) => {
+    if (!fs.existsSync(filePath)) return;
+    try {
+      evt.sender.startDrag({
+        file: filePath,
+        icon: fs.existsSync(ICON_PATH) ? ICON_PATH : path.join(__dirname, 'web', 'icon.png')
+      });
+    } catch (e) { console.error('拖拽启动失败：' + e.message); }
+  });
+
+  ipcMain.on('ff:copy-text', (evt, text) => {
+    clipboard.writeText(String(text == null ? '' : text));
+  });
+
+  ipcMain.handle('ff:reveal', async (evt, p) => {
+    if (p && fs.existsSync(p)) { try { shell.showItemInFolder(p); } catch (e) {} }
+    return true;
+  });
 }
 
 /* ---------------- 下载（导出文件） ---------------- */
@@ -630,6 +738,7 @@ if (!gotLock) {
     app.setAppUserModelId('com.forfree.desktop');
     buildMenu();
     setupDownloads();
+    setupShareIpc();
     createWindow();
 
     app.on('activate', () => {

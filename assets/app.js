@@ -74,6 +74,7 @@
         '<span>' + m.name + ' · 修改于 ' + FW.fmtTime(d.updated) + '</span></div>' +
         '<div class="ri-actions">' +
         '<button class="mini-btn" data-act="open">打开</button>' +
+        '<button class="mini-btn" data-act="share">发给朋友</button>' +
         '<button class="mini-btn" data-act="history">版本' +
         (Store.versionCount(d.id) ? ' ' + Store.versionCount(d.id) : '') + '</button>' +
         '<button class="mini-btn" data-act="diff">对比</button>' +
@@ -309,6 +310,9 @@
         '<span class="eo-ico">' + x.icon + '</span>' +
         '<span class="eo-t"><strong>' + FW.escapeHtml(x.title) + '</strong><span>' + FW.escapeHtml(x.desc) + '</span></span></button>').join('') +
       '</div>' +
+      '<div class="export-group"><h4>发给朋友</h4>' +
+      '<button class="export-opt" data-export="__share"><span class="eo-ico">➤</span>' +
+      '<span class="eo-t"><strong>发给朋友</strong><span>拖到微信、导出到电脑、或复制为文本</span></span></button></div>' +
       '<div class="export-group"><h4>更多</h4>' +
       '<button class="export-opt" data-export="__convert"><span class="eo-ico">⇄</span>' +
       '<span class="eo-t"><strong>打开格式转换中心</strong><span>批量转换多个文件，支持 PDF / 图片 / CSV</span></span></button></div>';
@@ -320,6 +324,7 @@
     const ed = FW.Editors[currentType];
 
     if (id === '__convert') { showConvert(); return; }
+    if (id === '__share') { global.SHARE.open(null); return; }
 
     if (currentType === 'pdf') {
       const map = {
@@ -533,6 +538,8 @@
         }
       } else if (act === 'history') {
         global.HISTORY.openPanel(id);
+      } else if (act === 'share') {
+        global.SHARE.open(id);
       } else if (act === 'diff') {
         global.DIFF.open({ leftKey: 'd:' + id });
       }
@@ -569,6 +576,7 @@
       else if (a === 'undo') ed && ed.undo();
       else if (a === 'redo') ed && ed.redo();
       else if (a === 'history') global.HISTORY.openPanel(currentDoc ? currentDoc.id : null);
+      else if (a === 'share') global.SHARE.open(null);
       else if (a === 'export') openExport();
     }));
     $('#btnFullscreen').addEventListener('click', () => {
