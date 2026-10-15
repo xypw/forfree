@@ -211,6 +211,12 @@
     setSaveState(true);
     dirty = false;
     refreshStatus();
+
+    // 记住最后打开的文档，下次启动直接进来
+    try {
+      Store.setSetting('lastDocId', doc.id);
+      Store.setSetting('lastOpenedAt', Date.now());
+    } catch (e) {}
   }
 
   function openPdf(bytes, name) {
@@ -554,7 +560,13 @@
       if (b) b.style.display = hasBridge ? 'inline-block' : 'none';
       const h = $('#appFolderHint');
       if (h) h.textContent = hasBridge ? '把整个文件夹拷给别人，对方双击 exe 就能用' : '';
+      const cb = $('#setAutoOpen');
+      if (cb) cb.checked = Store.settings().autoOpenLast !== false;
       $('#aboutMask').classList.add('on');
+    });
+    $('#setAutoOpen').addEventListener('change', (e) => {
+      Store.setSetting('autoOpenLast', e.target.checked);
+      FW.toast(e.target.checked ? '下次启动会自动回到上次编辑的文档' : '下次启动会停在首页');
     });
     $('#btnAppFolder').addEventListener('click', async () => {
       if (!(global.forfree && global.forfree.openAppFolder)) return;
@@ -637,10 +649,25 @@
     }
     if (dirty && currentType !== 'pdf') save(true);
     currentType = null; currentDoc = null;
+    // 主动回首页就清掉记录，做到「上次退出时看的是什么，下次就回到什么」
+    try { Store.setSetting('lastDocId', null); } catch (e) {}
     $$('.app-pane').forEach((p) => p.classList.remove('active'));
     renderRecent($('#homeSearch').value.trim());
     updateStorageInfo();
     showView('home');
+  }
+
+  /** 启动时恢复上次编辑的文档 */
+  function restoreLastDoc() {
+    let s;
+    try { s = Store.settings(); } catch (e) { return; }
+    if (s.autoOpenLast === false) return;      // 用户在「关于」里关掉了
+    const id = s.lastDocId;
+    if (!id) return;
+    const d = Store.get(id);
+    if (!d) { try { Store.setSetting('lastDocId', null); } catch (e) {} return; }
+    openDoc(d);
+    FW.toast('已恢复上次编辑的文档', 2400);
   }
 
   async function openAnyFile() {
@@ -729,6 +756,9 @@
       renderRecent('');
       updateStorageInfo();
     }
+
+    // 恢复上次编辑的文档（可在「关于」里关掉）
+    setTimeout(restoreLastDoc, 60);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
@@ -748,4 +778,5 @@
     global.TRASH.updateBadge();
   };
   app.refreshStatus = refreshStatus;
+  app.restoreLastDoc = restoreLastDoc;
 })(window);

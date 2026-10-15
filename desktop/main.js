@@ -575,6 +575,33 @@ async function runSelfTest() {
       return out.join(' / '); })()`);
     console.log('  导出生成：' + exports2);
 
+    // 记住上次编辑的文档：写一个文档 → 重载页面（等价于重启）→ 看会不会自动回到它
+    const memId = await js(`(function(){
+      FW.app.newDoc('doc');
+      document.querySelector('#docTitle').value = '记忆测试文档';
+      document.querySelector('#docPaper').innerHTML = '<h1>记忆测试</h1><p>重启后应该自动回到这里。</p>';
+      FW.app.save(true);
+      window.__memId = FW.app.currentDoc().id;
+      return window.__memId;
+    })()`);
+    await new Promise((r) => setTimeout(r, 600));
+    console.log('  已记录 lastDocId，准备重载页面模拟重启…');
+    wc.reload();
+    await new Promise((r) => setTimeout(r, 4000));
+    const restored = await js(`(function(){
+      var d = FW.app.currentDoc();
+      var active = document.querySelector('.view.active');
+      return JSON.stringify({
+        autoOpened: !!d,
+        title: d ? d.title : null,
+        idMatch: d ? (d.id === window.__memId) : false,
+        view: active ? active.id : null,
+        lastDocIdSaved: !!FW.Store.settings().lastDocId
+      });
+    })()`);
+    console.log('  重启后恢复：' + restored);
+    await shoot('16-重启后恢复');
+
     console.log('  结论：自检通过');
     console.log('==============================\n');
   } catch (e) {
