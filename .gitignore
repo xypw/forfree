@@ -1,0 +1,32 @@
+# ---------- 依赖与构建产物（不要提交）----------
+desktop/node_modules/
+desktop/dist/
+desktop/package-lock.json
+
+# sync-web.js 生成的副本，源码在根目录，提交了会产生分叉
+desktop/web/
+
+# 自检截图
+desktop/shots/
+desktop/shots-portable/
+
+# 自动生成的应用图标（npm run icon 可重新生成）
+desktop/build/icon.ico
+desktop/build/icon.png
+
+# ---------- 系统与编辑器 ----------
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# ---------- 临时文件 ----------
+*.log
+*.tmp
+__pycache__/
+*.pyc
+
+# ---------- 工具相关的本地数据（与软件本身无关）----------
+.workbuddy-ai/

@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ForFree 办公套件</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<!-- ==================== 启动页 ==================== -->
+<div id="view-home" class="view active">
+  <header class="home-top">
+    <div class="brand">
+      <div class="brand-logo">F</div>
+      <div class="brand-text"><strong>ForFree</strong><span>免费办公套件</span></div>
+    </div>
+    <div class="home-search">
+      <span class="ico">&#128269;</span>
+      <input id="homeSearch" type="text" placeholder="搜索本地文档">
+    </div>
+    <div class="home-top-right">
+      <button class="ghost-btn" id="btnDiff">文档对比</button>
+      <button class="ghost-btn" id="btnImage">图片工具</button>
+      <button class="ghost-btn" id="btnTrash">回收站<span class="badge-num" id="trashBadge" style="display:none">0</span></button>
+      <button class="ghost-btn" id="btnOpenFile">打开文件</button>
+      <button class="ghost-btn" id="btnConvert">格式转换</button>
+      <button class="ghost-btn" id="btnAbout">关于</button>
+    </div>
+  </header>
+
+  <main class="home-main">
+    <section class="home-section">
+      <h2>新建</h2>
+      <div class="new-grid">
+        <button class="new-card" data-new="doc">
+          <div class="nc-icon nc-doc">文</div>
+          <div class="nc-body"><strong>文字文档</strong><span>排版 · 报告 · 公文</span></div>
+        </button>
+        <button class="new-card" data-new="sheet">
+          <div class="nc-icon nc-sheet">表</div>
+          <div class="nc-body"><strong>电子表格</strong><span>数据 · 公式 · 图表</span></div>
+        </button>
+        <button class="new-card" data-new="slide">
+          <div class="nc-icon nc-slide">演</div>
+          <div class="nc-body"><strong>演示文稿</strong><span>幻灯片 · 汇报</span></div>
+        </button>
+        <button class="new-card" data-new="pdf">
+          <div class="nc-icon nc-pdf">PDF</div>
+          <div class="nc-body"><strong>PDF 文档</strong><span>阅读 · 批注 · 编辑</span></div>
+        </button>
+      </div>
+    </section>
+
+    <section class="home-section">
+      <div class="sec-head">
+        <h2>模板库</h2>
+        <span class="sec-sub" id="tplCount"></span>
+      </div>
+      <div class="tpl-filter" id="tplFilter"></div>
+      <div class="tpl-grid" id="tplGrid"></div>
+    </section>
+
+    <section class="home-section">
+      <div class="sec-head"><h2>最近文档</h2><span class="sec-sub" id="recentCount"></span></div>
+      <div id="recentList" class="recent-list"></div>
+    </section>
+  </main>
+
+  <footer class="home-foot">
+    <span>全部数据保存在本机浏览器，不联网、不上传</span>
+    <span id="storageInfo"></span>
+  </footer>
+</div>
+
+<!-- ==================== 编辑器外壳 ==================== -->
+<div id="view-editor" class="view">
+  <header class="titlebar">
+    <button class="back-btn" id="btnHome" title="返回首页"><span class="brand-logo sm">F</span></button>
+    <div class="quick-access">
+      <button class="qa-btn" data-qa="save" title="保存 (Ctrl+S)">&#128190;<span>保存</span></button>
+      <button class="qa-btn" data-qa="undo" title="撤销 (Ctrl+Z)">&#8630;</button>
+      <button class="qa-btn" data-qa="redo" title="重做 (Ctrl+Y)">&#8631;</button>
+      <button class="qa-btn" data-qa="history" title="历史版本">&#9202;<span>版本</span></button>
+      <button class="qa-btn" data-qa="export" title="导出 / 转换">&#8681;<span>导出</span></button>
+    </div>
+    <div class="doc-title">
+      <input id="docTitle" type="text" value="未命名文档" spellcheck="false">
+      <span class="save-state" id="saveState">已保存</span>
+    </div>
+    <div class="titlebar-right">
+      <span class="app-badge" id="appBadge">文字</span>
+      <button class="qa-btn" id="btnFullscreen" title="全屏">&#9974;</button>
+    </div>
+  </header>
+
+  <nav class="ribbon-tabs" id="ribbonTabs"></nav>
+  <div class="ribbon-body" id="ribbonBody"></div>
+
+  <div class="workarea">
+    <!-- 文字文档 -->
+    <div class="app-pane" id="pane-doc">
+      <div class="doc-scroll">
+        <div class="page-shadow"><div id="docPaper" class="doc-paper" contenteditable="true" spellcheck="false"></div></div>
+      </div>
+    </div>
+
+    <!-- 电子表格 -->
+    <div class="app-pane" id="pane-sheet">
+      <div class="sheet-toolbar">
+        <div class="cell-ref" id="cellRef">A1</div>
+        <div class="fx">fx</div>
+        <input id="formulaInput" type="text" placeholder="输入内容或公式，例如 =SUM(A1:A5)" spellcheck="false">
+      </div>
+      <div class="sheet-wrap">
+        <div class="sheet-scroll" id="sheetScroll"><table class="sheet-table" id="sheetTable"></table></div>
+      </div>
+      <div class="sheet-tabs" id="sheetTabs"></div>
+    </div>
+
+    <!-- 演示文稿 -->
+    <div class="app-pane" id="pane-slide">
+      <div class="slide-side" id="slideThumbs"></div>
+      <div class="slide-main">
+        <div class="slide-stage" id="slideStage"><div class="slide-canvas" id="slideCanvas"></div></div>
+        <div class="slide-bar">
+          <button id="btnSlidePrev">‹ 上一页</button>
+          <span id="slideCounter">1 / 1</span>
+          <button id="btnSlideNext">下一页 ›</button>
+          <button id="btnPresent" style="margin-left:12px;background:var(--slide);color:#fff;padding:5px 16px;border-radius:5px">开始放映</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- PDF 工作台 -->
+    <div class="app-pane" id="pane-pdf">
+      <div class="pdf-side" id="pdfThumbs"></div>
+      <div class="pdf-main">
+        <div class="pdf-scroll" id="pdfScroll"><div class="pdf-pages" id="pdfPages"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="statusbar" id="statusBar"></footer>
+</div>
+
+<!-- ==================== 格式转换中心 ==================== -->
+<div id="view-convert" class="view">
+  <header class="titlebar">
+    <button class="back-btn" id="btnHome2" title="返回首页"><span class="brand-logo sm">F</span></button>
+    <div class="doc-title"><strong style="font-size:13.5px">格式转换中心</strong></div>
+    <div class="titlebar-right"><span class="app-badge">转换</span></div>
+  </header>
+  <div class="convert-wrap">
+    <div class="cv-drop" id="cvDrop">
+      <div class="cv-drop-ico">&#8682;</div>
+      <strong>拖拽文件到这里，或点击选择</strong>
+      <span>支持 docx · xlsx · pptx · pdf · csv · txt · md · html · json · 图片</span>
+      <button class="ghost-btn" id="cvPick" style="margin-top:14px">选择文件</button>
+    </div>
+    <div id="cvQueue" class="cv-queue"></div>
+    <div class="cv-tip">
+      <h4>转换说明</h4>
+      <ul>
+        <li><b>Office 互转</b>：docx / xlsx / pptx 由本机解析与生成，不上传服务器。</li>
+        <li><b>PDF 相关</b>：PDF 转图片/文本使用 PDF 渲染引擎；图片转 PDF、合并拆分使用 PDF 写入引擎。</li>
+        <li><b>JSON 工程文件</b>：ForFree 自己的工程格式，可无损往返编辑，也可转成 Office 格式交付。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 文档对比 ==================== -->
+<div id="view-diff" class="view">
+  <header class="titlebar">
+    <button class="back-btn" id="btnHome3" title="返回首页"><span class="brand-logo sm">F</span></button>
+    <div class="doc-title"><strong style="font-size:13.5px">文档对比</strong></div>
+    <div class="titlebar-right"><span class="app-badge" style="background:#8B5CF6">对比</span></div>
+  </header>
+
+  <div class="diff-bar">
+    <div class="diff-pick">
+      <span class="dp-tag dp-l">左侧</span>
+      <select id="diffLeftSel"></select>
+      <select id="diffLeftVer" disabled></select>
+    </div>
+    <button class="diff-swap" id="diffSwap" title="交换左右">⇄</button>
+    <div class="diff-pick">
+      <span class="dp-tag dp-r">右侧</span>
+      <select id="diffRightSel"></select>
+    </div>
+  </div>
+
+  <div class="diff-tools">
+    <div class="dt-group">
+      <button class="dt-btn on" id="diffModeSplit">双栏对照</button>
+      <button class="dt-btn" id="diffModeUnified">统一视图</button>
+    </div>
+    <div class="dt-group">
+      <button class="dt-btn" id="diffOnlyDiff">只看差异</button>
+      <button class="dt-btn" id="diffIgnoreCase">忽略大小写</button>
+      <button class="dt-btn" id="diffIgnoreSpace">忽略空白</button>
+    </div>
+    <div class="dt-group">
+      <button class="dt-btn" id="diffJumpPrev">↑ 上一处</button>
+      <button class="dt-btn" id="diffJumpNext">↓ 下一处</button>
+    </div>
+    <input id="diffKeyword" class="dt-search" type="text" placeholder="筛选行内容…">
+    <button class="dt-btn" id="diffExport">导出报告</button>
+    <span class="diff-stats" id="diffStats"></span>
+  </div>
+
+  <div class="diff-heads">
+    <div class="dh dh-l"><span id="diffLeftName">—</span></div>
+    <div class="dh dh-r"><span id="diffRightName">—</span></div>
+  </div>
+
+  <div class="diff-body" id="diffBody"></div>
+</div>
+
+<!-- ==================== 回收站 ==================== -->
+<div id="view-trash" class="view">
+  <header class="titlebar">
+    <button class="back-btn" id="btnHome4" title="返回首页"><span class="brand-logo sm">F</span></button>
+    <div class="doc-title"><strong style="font-size:13.5px">回收站</strong></div>
+    <div class="titlebar-right">
+      <button class="ghost-btn" id="trashEmpty" style="margin-right:8px">清空回收站</button>
+      <span class="app-badge" style="background:#5F5E5A">回收站</span>
+    </div>
+  </header>
+  <div class="trash-wrap">
+    <p class="trash-tip">删除的文档会先放到这里，可以随时还原。清空回收站后无法恢复。</p>
+    <div id="trashList" class="recent-list"></div>
+  </div>
+</div>
+
+<!-- ==================== 图片工具箱 ==================== -->
+<div id="view-image" class="view">
+  <header class="titlebar">
+    <button class="back-btn" id="btnHome5" title="返回首页"><span class="brand-logo sm">F</span></button>
+    <div class="doc-title"><strong style="font-size:13.5px">图片工具箱</strong></div>
+    <div class="titlebar-right"><span class="app-badge" style="background:#F5B301">图片</span></div>
+  </header>
+
+  <div class="img-wrap">
+    <div class="img-side">
+      <div class="img-drop" id="imgDrop">
+        <div class="img-drop-ico">＋</div>
+        <strong>拖入图片</strong>
+        <span>或点击选择，支持多张</span>
+      </div>
+      <div class="img-list" id="imgList"></div>
+    </div>
+
+    <div class="img-main">
+      <div class="img-op-tabs" id="imgOpTabs"></div>
+      <div class="img-op-body" id="imgOpBody"></div>
+      <div class="img-preview" id="imgPreview">
+        <div class="img-preview-empty">处理后的图片会显示在这里</div>
+      </div>
+      <div class="img-op-foot">
+        <span class="img-op-hint" id="imgHint"></span>
+        <button class="ghost-btn" id="imgClear">清空</button>
+        <button class="primary-btn" id="imgRun">开始处理</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 导出面板 -->
+<div class="modal-mask" id="exportMask">
+  <div class="modal">
+    <div class="modal-head"><h3 id="exportTitle">导出 / 转换</h3><button class="modal-x" data-close>×</button></div>
+    <div class="modal-body" id="exportBody"></div>
+  </div>
+</div>
+
+<!-- 关于面板 -->
+<div class="modal-mask" id="aboutMask">
+  <div class="modal">
+    <div class="modal-head"><h3>关于 ForFree</h3><button class="modal-x" data-close>×</button></div>
+    <div class="modal-body">
+      <p><strong>ForFree 办公套件</strong> —— 完全免费、离线可用的网页版办公工具。</p>
+      <p>包含 <b>文字文档</b>、<b>电子表格</b>、<b>演示文稿</b>、<b>PDF 工作台</b> 四大模块，并内置 <b>格式转换中心</b>。</p>
+      <p>可读取与生成真实的 <code>.docx</code> / <code>.xlsx</code> / <code>.pptx</code>，可阅读并批注 <code>.pdf</code>，可导出 CSV / HTML / TXT / Markdown / 图片 / PDF。</p>
+      <p>所有文档保存在本机浏览器 localStorage 中，不联网、不上传任何服务器。</p>
+      <p class="muted">快捷键：Ctrl+S 保存 · Ctrl+Z 撤销 · Ctrl+Y 重做 · Ctrl+B 加粗 · Ctrl+I 斜体 · Ctrl+U 下划线</p>
+    </div>
+  </div>
+</div>
+
+<!-- 放映模式 -->
+<div id="presentMode">
+  <div id="presentStage"></div>
+  <div class="present-bar">
+    <button id="prPrev">‹ 上一页</button>
+    <span id="prCount">1 / 1</span>
+    <button id="prNext">下一页 ›</button>
+    <button id="prExit">退出放映 (Esc)</button>
+  </div>
+</div>
+
+<input type="file" id="filePicker" style="display:none">
+<div class="toast" id="toast"></div>
+
+<script src="assets/vendor/fflate.min.js"></script>
+<script src="assets/vendor/pdf-lib.min.js"></script>
+<script src="assets/vendor/pdf.min.js"></script>
+<script src="assets/store.js"></script>
+<script src="assets/office.js"></script>
+<script src="assets/templates.js"></script>
+<script src="assets/diff.js"></script>
+<script src="assets/typeset.js"></script>
+<script src="assets/history.js"></script>
+<script src="assets/editor-doc.js"></script>
+<script src="assets/editor-sheet.js"></script>
+<script src="assets/editor-slide.js"></script>
+<script src="assets/pdf-workspace.js"></script>
+<script src="assets/pdf-convert.js"></script>
+<script src="assets/pdf-tools.js"></script>
+<script src="assets/image-tools.js"></script>
+<script src="assets/convert.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

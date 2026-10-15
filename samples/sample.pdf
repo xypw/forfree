@@ -1,0 +1,64 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 172 >>
+stream
+BT /F1 22 Tf 72 760 Td (FreeWPS PDF Test - Page 1) Tj ET
+BT /F1 11 Tf 72 730 Td (This page verifies render, annotate and export.) Tj ET
+0.16 0.50 0.88 rg 72 660 451 8 re f
+
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 172 >>
+stream
+BT /F1 22 Tf 72 760 Td (FreeWPS PDF Test - Page 2) Tj ET
+BT /F1 11 Tf 72 730 Td (This page verifies render, annotate and export.) Tj ET
+0.16 0.50 0.88 rg 72 660 451 8 re f
+
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 172 >>
+stream
+BT /F1 22 Tf 72 760 Td (FreeWPS PDF Test - Page 3) Tj ET
+BT /F1 11 Tf 72 730 Td (This page verifies render, annotate and export.) Tj ET
+0.16 0.50 0.88 rg 72 660 451 8 re f
+
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000133 00000 n 
+0000000203 00000 n 
+0000000329 00000 n 
+0000000552 00000 n 
+0000000678 00000 n 
+0000000901 00000 n 
+0000001027 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+1250
+%%EOF
