@@ -9,6 +9,7 @@ desktop/web/
 # 自检截图
 desktop/shots/
 desktop/shots-portable/
+desktop/shots-packaged/
 
 # 自动生成的应用图标（npm run icon 可重新生成）
 desktop/build/icon.ico
