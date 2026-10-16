@@ -30,7 +30,7 @@
       "signAndEditExecutable": false
     },
     "portable": {
-      "artifactName": "ForFree-${version}-免安装版.exe",
+      "artifactName": "ForFree-${version}-portable.exe",
       "unicode": true
     },
     "compression": "maximum"

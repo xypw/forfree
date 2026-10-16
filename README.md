@@ -17,7 +17,7 @@
 ## 下载
 
 不想折腾的话，直接去 [Releases](../../releases) 页面下载最新的
-`ForFree-x.x.x-免安装版.exe` —— **单个文件，双击即用，无需安装**。
+`ForFree-x.x.x-portable.exe` —— **单个文件，双击即用，无需安装**。
 拷给别人、放 U 盘、丢网盘都行，目标机器不需要装 Node、Python 或任何运行库。
 
 > 首次启动会慢几秒（免安装版要先把自己解压到临时目录再运行）。
@@ -29,7 +29,7 @@
 
 ### 桌面客户端（推荐给最终用户）
 
-从 [Releases](../../releases) 下载 `ForFree-1.0.0-免安装版.exe`，双击运行。
+从 [Releases](../../releases) 下载 `ForFree-1.0.0-portable.exe`，双击运行。
 
 ### 网页版（开发者 / 快速体验）
 
