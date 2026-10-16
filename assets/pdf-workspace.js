@@ -1065,8 +1065,9 @@
        既不嵌字体、又要外部 CMap 才能解码 —— 本应用自己的 pdf.js 没配 cMapUrl，
        会直接渲染不出来。改成图片后，任何阅读器都显示一致、中文也绝对正确。
        代价：新文字是图片，不能再被选中/搜索（这是这条路径的取舍，已在界面上说明）。
-     坐标说明：框选得到的是「页面点」坐标（视口像素 ÷ scale，y 轴向下），与 MuPDF 一致，
-     直接当 rect 传即可；贴图时再用 pdf.js 的 convertToPdfPoint 换成 PDF 坐标（y 向上）。 */
+     坐标说明：框选得到的是「显示坐标」（视口像素 ÷ scale，y 轴向下）。
+     它跟 MuPDF 的页面坐标**不一定相等** —— 用户转过页面时要换算，见 toMuPdfRect()。
+     贴图那一步则用显示坐标 + 总旋转，经 pdf.js 的 convertToPdfPoint 换成 PDF 坐标（y 向上）。 */
   async function editTextAt(d) {
     if (!window.forfree || typeof window.forfree.redactPdf !== 'function') {
       FW.toast('「编辑文字」仅桌面版可用：网页版改不了 PDF 已有内容（只能批注）。', 4600);
