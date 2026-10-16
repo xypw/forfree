@@ -293,7 +293,9 @@
       const suffix = flatten ? (r.flattened ? '_已填写_扁平化.pdf' : '_已填写.pdf') : '_已填写.pdf';
       FW.downloadBytes(state.title + suffix, r.bytes, 'application/pdf');
       if (flatten && !r.flattened) {
-        FW.toast('已导出 ' + r.applied.length + ' 个字段。注意：字段里含中文时无法扁平化（内置字体不支持），已按普通填写导出，接收方仍可编辑。', 6000);
+        FW.toast('已导出 ' + r.applied.length + ' 个字段。注意：扁平化未成功，已按普通填写导出，接收方仍可编辑。', 6000);
+      } else if (flatten && r.flattened && r.flattenError) {
+        FW.toast('已导出并扁平化 ' + r.applied.length + ' 个字段。字段值含中文，已改用图像化方式扁平化（接收方不可编辑，但该部分文字不可再选中）。', 6000);
       } else {
         FW.toast('已导出，写入 ' + r.applied.length + ' 个字段' + (r.flattened ? '（已扁平化，不可再编辑）' : ''), 3400);
       }

@@ -610,6 +610,8 @@
       shared = descend(xmlDoc(dec(files['xl/sharedStrings.xml'])), 'si').map((si) =>
         descend(si, 't').map((t) => t.textContent).join(''));
     }
+    // 单元格样式（字体 / 颜色 / 填充 / 对齐 / 数字格式）
+    const styles = files['xl/styles.xml'] ? parseXlsxStyles(xmlDoc(dec(files['xl/styles.xml']))) : null;
 
     const sheets = [];
     const sheetNodes = descend(wbDom, 'sheet');
@@ -653,7 +655,7 @@
             const cell = { v: val == null ? '' : val };
             if (fNode) cell.f = '=' + fNode.textContent;
             const sIdx = parseInt(c.getAttribute('s') || '0', 10);
-            if (sIdx > 0) cell._s = sIdx;
+            if (sIdx > 0 && styles && styles[sIdx]) Object.assign(cell, styles[sIdx]);
             if (cell.v !== '' || cell.f) sheet.cells[ref.r + ',' + ref.c] = cell;
           });
         });
@@ -663,11 +665,102 @@
     return { sheets: sheets.length ? sheets : [{ name: 'Sheet1', cells: {}, cols: {}, rows: {}, colW: 88, rowH: 24 }] };
   }
 
+  // 解析 xl/styles.xml -> cellXfs 索引对应的单元格样式对象数组
+  function parseXlsxStyles(sdom) {
+    const numFmts = {};
+    descend(sdom, 'numFmt').forEach((n) => {
+      numFmts[parseInt(n.getAttribute('numFmtId'), 10)] = n.getAttribute('formatCode') || '';
+    });
+    const builtin = {
+      1: '0', 2: '0.00', 3: '#,##0', 4: '#,##0.00', 9: '0%', 10: '0.00%',
+      11: '0.00E+00', 37: '#,##0', 38: '#,##0', 39: '#,##0', 40: '#,##0',
+      44: 'currency', 48: '0.00E+00'
+    };
+    const fmtOf = (id) => {
+      const code = numFmts[id] != null ? numFmts[id] : builtin[id];
+      if (!code) return null;
+      if (/%/.test(code)) return 'percent';
+      if (/E\+|e\+/.test(code)) return 'sci';
+      if (/[$€£¥￥]|\[red\]|\[blue\]/.test(code) || code === 'currency') return 'currency';
+      if (/#,##/.test(code)) return 'thousand';
+      if (/\.0/.test(code)) return 'number';
+      if (/0/.test(code)) return 'int';
+      return null;
+    };
+
+    const fonts = [];
+    const fontsNode = descend(sdom, 'fonts')[0];
+    if (fontsNode) kids(fontsNode, 'font').forEach((f) => {
+      const o = {};
+      if (kids(f, 'b')[0]) o.b = true;
+      if (kids(f, 'i')[0]) o.i = true;
+      if (kids(f, 'u')[0]) o.u = true;
+      const col = kids(f, 'color')[0];
+      if (col) {
+        const rgb = col.getAttribute('rgb');
+        if (rgb && rgb.length >= 6) o.color = '#' + rgb.slice(-6).toUpperCase();
+      }
+      fonts.push(o);
+    });
+
+    const fills = [];
+    const fillsNode = descend(sdom, 'fills')[0];
+    if (fillsNode) kids(fillsNode, 'fill').forEach((f) => {
+      const pf = kids(f, 'patternFill')[0];
+      let bg = null;
+      if (pf && pf.getAttribute('patternType') && pf.getAttribute('patternType') !== 'none') {
+        const fg = kids(pf, 'fgColor')[0];
+        if (fg) {
+          const rgb = fg.getAttribute('rgb');
+          if (rgb && rgb.length >= 6) bg = '#' + rgb.slice(-6).toUpperCase();
+        }
+      }
+      fills.push(bg);
+    });
+
+    const out = [];
+    const xfsNode = descend(sdom, 'cellXfs')[0];
+    if (xfsNode) kids(xfsNode, 'xf').forEach((xf) => {
+      const o = {};
+      const fid = parseInt(xf.getAttribute('fontId') || '0', 10);
+      const flid = parseInt(xf.getAttribute('fillId') || '0', 10);
+      const nfid = parseInt(xf.getAttribute('numFmtId') || '0', 10);
+      if (fonts[fid]) Object.assign(o, fonts[fid]);
+      if (fills[flid]) o.bg = fills[flid];
+      const al = kids(xf, 'alignment')[0];
+      if (al) {
+        const h = al.getAttribute('horizontal');
+        if (h === 'center' || h === 'centerContinuous') o.align = 'center';
+        else if (h === 'right') o.align = 'right';
+        else if (h === 'left') o.align = 'left';
+      }
+      const fmt = fmtOf(nfid);
+      if (fmt) o.fmt = fmt;
+      out.push(o);
+    });
+    return out;
+  }
+
   /* ============================================================
      五、PPTX 生成
      ============================================================ */
   const EMU = 9525; // 1px(96dpi) -> EMU
   const PTX = (px) => Math.round(px * EMU);
+
+  // dataURL 图片 -> { ext, mime, bytes }，供 PPTX 内嵌图片使用
+  function dataUrlToImage(url) {
+    const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url || '');
+    if (!m) return null;
+    const mime = m[1].toLowerCase();
+    let ext = mime.split('/')[1].replace('jpeg', 'jpg');
+    if (ext === 'svg+xml') ext = 'svg';
+    try {
+      const bin = atob(m[2]);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return { ext: ext, mime: mime, bytes: bytes };
+    } catch (e) { return null; }
+  }
 
   function buildPptx(doc) {
     const data = doc.data;
@@ -676,8 +769,25 @@
     const files = {};
     const slideRelsList = [];
 
+    const media = [];      // 内嵌图片资源 { name, bytes }
+    const mediaExts = {};  // 扩展名 -> content type
     slides.forEach((sl, i) => {
-      const shapes = (sl.shapes || []).map((sh, si) => shapeXml(sh, si + 2)).join('');
+      const rels = ['<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>'];
+      let nextRid = 2;
+      const shapes = (sl.shapes || []).map((sh, si) => {
+        let imgRid = null;
+        if (sh.type === 'image' && sh.src) {
+          const parsed = dataUrlToImage(sh.src);
+          if (parsed) {
+            const mediaName = 'image' + (media.length + 1) + '.' + parsed.ext;
+            media.push({ name: mediaName, bytes: parsed.bytes });
+            mediaExts[parsed.ext] = parsed.mime;
+            imgRid = 'rId' + (nextRid++);
+            rels.push('<Relationship Id="' + imgRid + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/' + mediaName + '"/>');
+          }
+        }
+        return shapeXml(sh, si + 2, imgRid);
+      }).join('');
       const bgXml = sl.bg ? '<p:bg><p:bgPr><a:solidFill><a:srgbClr val="' + sl.bg.replace('#', '').toUpperCase() + '"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' : '';
       const xml =
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
@@ -693,7 +803,7 @@
       slideRelsList.push(
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' +
+        rels.join('') +
         '</Relationships>');
     });
 
@@ -771,6 +881,7 @@
       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
       '<Default Extension="xml" ContentType="application/xml"/>' +
+      Object.keys(mediaExts).map((ext) => '<Default Extension="' + ext + '" ContentType="' + mediaExts[ext] + '"/>').join('') +
       '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>' +
       '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
       '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>' +
@@ -795,10 +906,22 @@
       '<dcterms:created xsi:type="dcterms:W3CDTF">' + now + '</dcterms:created>' +
       '<dcterms:modified xsi:type="dcterms:W3CDTF">' + now + '</dcterms:modified></cp:coreProperties>');
 
+    media.forEach((m) => { files['ppt/media/' + m.name] = m.bytes; });
+
     return zip(files);
   }
 
-  function shapeXml(sh, id) {
+  function shapeXml(sh, id, imgRid) {
+    if (sh.type === 'image') {
+      if (!imgRid) return '';
+      return '<p:pic><p:nvPicPr>' +
+        '<p:cNvPr id="' + id + '" name="Picture ' + id + '"/>' +
+        '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>' +
+        '<p:blipFill><a:blip r:embed="' + imgRid + '"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>' +
+        '<p:spPr><a:xfrm><a:off x="' + PTX(sh.x) + '" y="' + PTX(sh.y) + '"/>' +
+        '<a:ext cx="' + PTX(sh.w) + '" cy="' + PTX(sh.h) + '"/></a:xfrm>' +
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>';
+    }
     const fill = sh.fill ? '<a:solidFill><a:srgbClr val="' + sh.fill.replace('#', '').toUpperCase() + '"/></a:solidFill>' : '<a:noFill/>';
     const line = sh.line ? '<a:ln w="' + Math.round((sh.lineW || 1) * 12700) + '"><a:solidFill><a:srgbClr val="' + sh.line.replace('#', '').toUpperCase() + '"/></a:solidFill></a:ln>' : '<a:ln><a:noFill/></a:ln>';
 

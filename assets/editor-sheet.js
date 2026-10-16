@@ -358,6 +358,7 @@
      ========================================================== */
   let doc = null, sheetIdx = 0, ROWS = 60, COLS = 20;
   let sel = { r: 0, c: 0 }, range = null, editing = null, onChange = null;
+  let undoStack = [], redoStack = [];
   let computed = {};   // 'r,c' -> {v, err}
   let clipboard = null;
   let bound = false;
@@ -518,7 +519,8 @@
     if (!editing) return;
     const { r, c } = editing;
     const sh = sheet(), k = r + ',' + c;
-    const prev = sh.cells[k] || {};
+    const prevRaw = sh.cells[k] ? JSON.stringify(sh.cells[k]) : '';
+    const beforeCells = cloneCells(sh), bRows = ROWS, bCols = COLS, bSheet = sheetIdx;
     const raw = String(value);
     const patch = {};
     if (raw.charAt(0) === '=') { patch.f = raw; patch.v = null; }
@@ -531,6 +533,8 @@
     setCell(r, c, Object.assign({}, patch));
     const cell = sh.cells[k];
     if (cell && cell.f === null) delete cell.f;
+    const afterRaw = sh.cells[k] ? JSON.stringify(sh.cells[k]) : '';
+    if (afterRaw !== prevRaw) recordChange(beforeCells, bRows, bCols, bSheet);
     editing = null;
     render();
     emit();
@@ -578,10 +582,30 @@
 
   function emit() { if (onChange) onChange(); }
 
+  /* ---------- 撤销 / 重做（按整张工作表的单元格快照） ---------- */
+  function cloneCells(sh) { return JSON.parse(JSON.stringify(sh.cells || {})); }
+  function recordChange(cells, rows, cols, sIdx) {
+    undoStack.push({ sheetIdx: sIdx, cells: cells, rows: rows, cols: cols });
+    if (undoStack.length > 60) undoStack.shift();
+    redoStack.length = 0;
+  }
+  function currentSnap() { return { sheetIdx: sheetIdx, cells: cloneCells(sheet()), rows: ROWS, cols: COLS }; }
+  function applySnap(s) {
+    if (!s || !doc.data.sheets[s.sheetIdx]) return;
+    doc.data.sheets[s.sheetIdx].cells = JSON.parse(JSON.stringify(s.cells));
+    sheetIdx = s.sheetIdx; doc.data.active = sheetIdx;
+    if (s.rows) ROWS = s.rows;
+    if (s.cols) COLS = s.cols;
+    sel = { r: 0, c: 0 }; range = null; editing = null;
+    render(); emit();
+  }
+
   /* ---------- 命令 ---------- */
   function applyStyle(patch) {
+    const before = cloneCells(sheet()), bR = ROWS, bC = COLS, bS = sheetIdx;
     const b = selBounds();
     for (let r = b.r1; r <= b.r2; r++) for (let c = b.c1; c <= b.c2; c++) setCell(r, c, patch);
+    recordChange(before, bR, bC, bS);
     render(); emit();
   }
 
@@ -595,6 +619,7 @@
       vals.unshift(cv.v); r--;
     }
     if (!vals.length) { FW.toast('上方没有可求和的数据'); return; }
+    recordChange(cloneCells(sheet()), ROWS, COLS, sheetIdx);
     setCell(b.r1, b.c1, { f: '=SUM(' + colName(b.c1) + (r + 2) + ':' + colName(b.c1) + b.r1 + ')', v: null });
     render(); emit();
     FW.toast('已插入 SUM 公式');
@@ -602,6 +627,7 @@
 
   function insertRow(where) {
     const b = selBounds(), sh = sheet();
+    recordChange(cloneCells(sh), ROWS, COLS, sheetIdx);
     const n = b.r2 - b.r1 + 1;
     const nc = {};
     Object.keys(sh.cells).forEach((k) => {
@@ -616,6 +642,7 @@
 
   function deleteRow() {
     const b = selBounds(), sh = sheet();
+    recordChange(cloneCells(sh), ROWS, COLS, sheetIdx);
     const n = b.r2 - b.r1 + 1, nc = {};
     Object.keys(sh.cells).forEach((k) => {
       const m = /^(\d+),(\d+)$/.exec(k); if (!m) return;
@@ -630,6 +657,7 @@
 
   function insertCol() {
     const b = selBounds(), sh = sheet();
+    recordChange(cloneCells(sh), ROWS, COLS, sheetIdx);
     const n = b.c2 - b.c1 + 1, nc = {};
     Object.keys(sh.cells).forEach((k) => {
       const m = /^(\d+),(\d+)$/.exec(k); if (!m) return;
@@ -643,6 +671,7 @@
 
   function deleteCol() {
     const b = selBounds(), sh = sheet();
+    recordChange(cloneCells(sh), ROWS, COLS, sheetIdx);
     const n = b.c2 - b.c1 + 1, nc = {};
     Object.keys(sh.cells).forEach((k) => {
       const m = /^(\d+),(\d+)$/.exec(k); if (!m) return;
@@ -682,6 +711,7 @@
       grid = text.replace(/\r\n/g, '\n').split('\n').map((line) => line.split('\t'));
     }
     if (!grid || !grid.length) return;
+    recordChange(cloneCells(sheet()), ROWS, COLS, sheetIdx);
     const b = selBounds();
     grid.forEach((row, ri) => row.forEach((v, ci) => {
       const raw = String(v);
@@ -698,12 +728,14 @@
 
   function clearSel() {
     const b = selBounds(), sh = sheet();
+    recordChange(cloneCells(sh), ROWS, COLS, sheetIdx);
     for (let r = b.r1; r <= b.r2; r++) for (let c = b.c1; c <= b.c2; c++) delete sh.cells[r + ',' + c];
     render(); emit();
   }
 
   function sortSel(asc) {
     const b = selBounds(), sh = sheet();
+    recordChange(cloneCells(sh), ROWS, COLS, sheetIdx);
     const col = b.c1;
     const rowsData = [];
     for (let r = b.r1; r <= b.r2; r++) {
@@ -1098,8 +1130,18 @@
       if (name === 'print') { global.print(); return; }
     },
 
-    undo() { FW.toast('表格暂不支持逐步撤销，可直接编辑单元格覆盖'); },
-    redo() { FW.toast('表格暂不支持逐步重做'); },
+    undo() {
+      if (!undoStack.length) { FW.toast('没有可撤销的操作'); return; }
+      redoStack.push(currentSnap());
+      applySnap(undoStack.pop());
+      FW.toast('已撤销');
+    },
+    redo() {
+      if (!redoStack.length) { FW.toast('没有可重做的操作'); return; }
+      undoStack.push(currentSnap());
+      applySnap(redoStack.pop());
+      FW.toast('已重做');
+    },
 
     status() {
       const b = selBounds();

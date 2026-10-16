@@ -179,6 +179,105 @@
    * @param values   { 字段名: 值 }，checkbox 用 true/false
    * @param flatten  是否扁平化
    */
+  // 判断表单当前值里是否含非 WinAnsi 字符（中文等）——这类值无法用 pdf-lib 内置字体扁平化
+  function formHasNonWinAnsi(form) {
+    let fields = [];
+    try { fields = form.getFields(); } catch (e) { return false; }
+    for (const f of fields) {
+      let v = '';
+      try {
+        const t = fieldType(f);
+        if (t === 'text') v = f.getText() || '';
+        else if (t === 'radio' || t === 'dropdown' || t === 'optionlist') {
+          const s = f.getSelected ? f.getSelected() : [];
+          v = s && s.length ? s[0] : '';
+        }
+      } catch (e) {}
+      for (let i = 0; i < v.length; i++) if (v.charCodeAt(i) > 255) return true;
+    }
+    return false;
+  }
+
+  // 用 canvas 把一段文本渲染成 PNG（系统字体支持中文），返回 Uint8Array
+  function renderFieldPng(text, wPt, hPt, opts) {
+    opts = opts || {};
+    const scale = 3;
+    const W = Math.max(8, Math.round(wPt * scale));
+    const H = Math.max(8, Math.round(hPt * scale));
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = opts.color || '#000000';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = opts.align === 'center' ? 'center' : 'left';
+    const str = String(text == null ? '' : text);
+    const multiline = !!opts.multiline || /\n/.test(str);
+    let fs = Math.round(H * 0.6);
+    if (multiline) fs = Math.max(8, Math.round(H * 0.9 / Math.max(1, str.split('\n').length)));
+    ctx.font = fs + 'px "Microsoft YaHei","PingFang SC",sans-serif';
+    const x = opts.align === 'center' ? W / 2 : 3;
+    if (multiline) {
+      const lines = str.split('\n');
+      const lh = fs * 1.25;
+      let y = (H - lines.length * lh) / 2 + lh / 2;
+      lines.forEach((ln) => { ctx.fillText(ln, x, y); y += lh; });
+    } else {
+      ctx.fillText(str, x, H / 2);
+    }
+    const b64 = cv.toDataURL('image/png').split(',')[1];
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  // 图像化扁平化：把每个字段的当前值渲染成图片贴到字段位置，再移除字段
+  async function flattenWithCanvas(libDoc) {
+    const form = libDoc.getForm();
+    const pages = libDoc.getPages();
+    const pageKeys = pages.map((p) => refKey(p.ref));
+    const fields = form.getFields();
+    for (const f of fields) {
+      const type = fieldType(f);
+      let text = '', isCheck = false, checked = false;
+      try {
+        if (type === 'text') text = f.getText() || '';
+        else if (type === 'checkbox') { isCheck = true; checked = f.isChecked(); }
+        else if (type === 'radio' || type === 'dropdown' || type === 'optionlist') {
+          const sel = f.getSelected ? f.getSelected() : [];
+          text = sel && sel.length ? sel[0] : '';
+        }
+      } catch (e) {}
+      if (!text && !isCheck) continue;
+      let multiline = false;
+      try { if (f.isMultiline) multiline = !!f.isMultiline(); } catch (e) {}
+      let widgets = [];
+      try { widgets = f.acroField.getWidgets() || []; } catch (e) {}
+      for (const w of widgets) {
+        let rect = null;
+        try { rect = w.getRectangle(); } catch (e) {}
+        if (!rect) continue;
+        const wPt = Math.abs(rect.width), hPt = Math.abs(rect.height);
+        if (wPt <= 0 || hPt <= 0) continue;
+        let pi = 0;
+        try { pi = Math.max(0, pageKeys.indexOf(refKey(w.P()))); } catch (e) {}
+        const page = pages[pi] || pages[0];
+        const content = isCheck ? (checked ? '✓' : '') : text;
+        if (!content) continue;
+        const png = renderFieldPng(content, wPt, hPt, { align: isCheck ? 'center' : 'left', multiline: multiline });
+        const img = await libDoc.embedPng(png);
+        page.drawImage(img, {
+          x: Math.min(rect.x, rect.x + rect.width),
+          y: Math.min(rect.y, rect.y + rect.height),
+          width: wPt, height: hPt
+        });
+      }
+      try { form.removeField(f); } catch (e) {}
+    }
+    return true;
+  }
+
   async function fillAndSave(libDoc, values, flatten) {
     const form = libDoc.getForm();
     const fields = form.getFields();
@@ -205,17 +304,36 @@
 
     let flattened = false;
     let flattenError = null;
+    let updateAppearances = false;
     if (flatten) {
-      try { form.flatten(); flattened = true; }
-      catch (e) {
-        flattenError = e.message || String(e);
-        console.warn('扁平化失败', e);
+      if (formHasNonWinAnsi(form)) {
+        // 含中文等非 WinAnsi 字符：pdf-lib 内置字体做不到，改用图像化扁平化
+        try {
+          await flattenWithCanvas(libDoc);
+          flattened = true;
+          flattenError = '字段值含中文，已用图像化方式扁平化（文字变为图片，不可再选中）';
+        } catch (e) {
+          flattenError = e.message || String(e);
+          console.warn('图像化扁平化失败', e);
+        }
+      } else {
+        try { form.flatten(); flattened = true; updateAppearances = true; }
+        catch (e) {
+          try {
+            await flattenWithCanvas(libDoc);
+            flattened = true;
+            flattenError = '已用图像化方式扁平化';
+          } catch (e2) {
+            flattenError = e.message || String(e);
+            console.warn('扁平化失败', e, e2);
+          }
+        }
       }
     }
 
     let bytes;
     try {
-      bytes = await libDoc.save({ updateFieldAppearances: flattened });
+      bytes = await libDoc.save({ updateFieldAppearances: updateAppearances });
     } catch (e) {
       // 再退一步：完全不碰外观，只存值
       flattenError = flattenError || (e.message || String(e));
