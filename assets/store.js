@@ -56,6 +56,107 @@
     toastTimer = setTimeout(() => t.classList.remove('on'), ms || 1900);
   }
 
+  /* ---------------- 输入框 / 确认框 ----------------
+     为什么不用 window.prompt：**Electron 的渲染进程不支持它** ——
+     调用会直接抛 "prompt() is and will not be supported."，桌面版里
+     重命名、插入表格、水印等十几处功能会静默失效。所以统一换成下面这套
+     自己实现的弹窗（复用已有的 .modal-mask / .modal 样式）。
+     用法：
+       const v = await FW.prompt('重命名：', doc.title);   // 取消返回 null
+       const v = await FW.prompt('备注：', '', { multiline: true });
+       const ok = await FW.confirm('确定删除？'); */
+  function promptBox(message, defaultValue, opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.className = 'modal-mask on fw-prompt-mask';
+      const multiline = !!opts.multiline;
+      const tag = multiline
+        ? '<textarea class="fw-prompt-input" rows="' + (opts.rows || 3) + '"></textarea>'
+        : '<input class="fw-prompt-input" type="' + (opts.type === 'number' ? 'number' : 'text') + '">';
+      mask.innerHTML =
+        '<div class="modal" style="max-width:420px">' +
+          '<div class="modal-head"><h3>' + escapeHtml(opts.title || '请输入') + '</h3></div>' +
+          '<div class="modal-body">' +
+            (message ? '<p style="margin-bottom:10px">' + escapeHtml(message) + '</p>' : '') +
+            tag +
+            '<p class="muted fw-prompt-err" style="color:#D93B2B;margin-top:8px;display:none"></p>' +
+          '</div>' +
+          '<div class="modal-foot">' +
+            '<button class="ghost-btn" data-act="cancel">取消</button>' +
+            '<button class="primary-btn" data-act="ok">确定</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(mask);
+      const input = $('.fw-prompt-input', mask);
+      const errEl = $('.fw-prompt-err', mask);
+      input.value = defaultValue == null ? '' : String(defaultValue);
+
+      let done = false;
+      const close = (val) => {
+        if (done) return;
+        done = true;
+        document.removeEventListener('keydown', onKey, true);
+        mask.remove();
+        resolve(val);
+      };
+      const tryOk = () => {
+        const v = input.value;
+        if (opts.validate) {
+          const msg = opts.validate(v);
+          if (msg) { errEl.textContent = msg; errEl.style.display = 'block'; input.focus(); return; }
+        }
+        close(v);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
+        else if (e.key === 'Enter' && (!multiline || e.ctrlKey || e.metaKey)) {
+          e.preventDefault(); e.stopPropagation(); tryOk();
+        }
+      };
+      document.addEventListener('keydown', onKey, true);
+      mask.querySelector('[data-act="ok"]').onclick = tryOk;
+      mask.querySelector('[data-act="cancel"]').onclick = () => close(null);
+      mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(null); });
+      setTimeout(() => { input.focus(); if (!multiline) input.select(); }, 30);
+    });
+  }
+
+  function confirmBox(message, opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.className = 'modal-mask on fw-prompt-mask';
+      mask.innerHTML =
+        '<div class="modal" style="max-width:400px">' +
+          '<div class="modal-head"><h3>' + escapeHtml(opts.title || '请确认') + '</h3></div>' +
+          '<div class="modal-body"><p>' + escapeHtml(message || '') + '</p></div>' +
+          '<div class="modal-foot">' +
+            '<button class="ghost-btn" data-act="cancel">' + escapeHtml(opts.cancelText || '取消') + '</button>' +
+            '<button class="primary-btn" data-act="ok">' + escapeHtml(opts.okText || '确定') + '</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(mask);
+      let done = false;
+      const close = (val) => {
+        if (done) return;
+        done = true;
+        document.removeEventListener('keydown', onKey, true);
+        mask.remove();
+        resolve(val);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
+        else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(true); }
+      };
+      document.addEventListener('keydown', onKey, true);
+      mask.querySelector('[data-act="ok"]').onclick = () => close(true);
+      mask.querySelector('[data-act="cancel"]').onclick = () => close(false);
+      mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(false); });
+      setTimeout(() => mask.querySelector('[data-act="ok"]').focus(), 30);
+    });
+  }
+
   /* ---------------- 下载 ---------------- */
   function downloadBlob(filename, blob) {
     const url = URL.createObjectURL(blob);
@@ -430,7 +531,8 @@
 
   global.FW = {
     $, $$, uid, fmtTime, fmtSize, escapeHtml, escapeXml,
-    toast, downloadBlob, downloadBytes, downloadText,
+    toast, prompt: promptBox, confirm: confirmBox,
+    downloadBlob, downloadBytes, downloadText,
     readAsArrayBuffer, readAsText, readAsDataURL, pickFile,
     Store, createDoc, TYPE_META
   };

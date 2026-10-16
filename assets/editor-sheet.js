@@ -1041,9 +1041,9 @@
 
     setChangeHandler(fn) { onChange = fn; },
 
-    renameSheet() {
+    async renameSheet() {
       const s = sheet();
-      const n = prompt('重命名工作表：', s.name);
+      const n = await FW.prompt('重命名工作表：', s.name, { title: '重命名工作表' });
       if (n && n.trim()) { s.name = n.trim(); renderTabs(); emit(); }
     },
 

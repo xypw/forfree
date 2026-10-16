@@ -39,5 +39,10 @@ contextBridge.exposeInMainWorld('forfree', {
   reveal: (p) => ipcRenderer.invoke('ff:reveal', p),
 
   /** 再开一个窗口打开另一篇文档 */
-  openInNewWindow: (docId) => ipcRenderer.invoke('ff:open-window', docId)
+  openInNewWindow: (docId) => ipcRenderer.invoke('ff:open-window', docId),
+
+  /** 桌面版专属：用本地 mupdf 真正删除 PDF 已有内容（redaction）。
+      regions: [{ page, rect:[x0,y0,x1,y1] }]，页面点坐标（y 向下）。
+      返回 { ok, bytes }，bytes 是擦除后的新 PDF。新文字由渲染进程用 pdf-lib 贴图写入。 */
+  redactPdf: (bytes, regions) => ipcRenderer.invoke('ff:pdf-redact', { bytes: bytes, regions: regions })
 });

@@ -224,7 +224,7 @@
 
     setChangeHandler(fn) { onChange = fn; },
 
-    cmd(name, value, btn) {
+    async cmd(name, value, btn) {
       const p = paper();
       if (name === 'bold' || name === 'italic' || name === 'underline' || name === 'strikeThrough' ||
         name === 'superscript' || name === 'subscript' || name === 'justifyLeft' || name === 'justifyCenter' ||
@@ -248,7 +248,7 @@
       if (name.indexOf('lh:') === 0) { S.lineHeight = parseFloat(name.slice(3)); p.style.lineHeight = S.lineHeight; emit(); return; }
       if (name === 'lineHeight') {
         const opts = ['1.0', '1.15', '1.5', '1.75', '2.0', '2.5'];
-        const cur = prompt('设置行距（如 1.0 / 1.5 / 1.75 / 2.0）：', String(S.lineHeight));
+        const cur = await FW.prompt('设置行距（如 1.0 / 1.5 / 1.75 / 2.0）：', String(S.lineHeight), { title: '行距', type: 'number' });
         if (cur && !isNaN(parseFloat(cur))) { S.lineHeight = parseFloat(cur); p.style.lineHeight = S.lineHeight; emit(); }
         return;
       }
@@ -265,7 +265,7 @@
         return;
       }
       if (name === 'insertTable') {
-        const n = prompt('插入表格，输入「行数x列数」，例如 3x4：', '3x3');
+        const n = await FW.prompt('插入表格，输入「行数x列数」，例如 3x4：', '3x3', { title: '插入表格' });
         if (!n) return;
         const m = /^(\d+)\s*[x×,\s]\s*(\d+)$/i.exec(n.trim());
         if (!m) { FW.toast('格式不正确，示例：3x4'); return; }
@@ -282,8 +282,8 @@
       if (name === 'insertImage') {
         FW.pickFile('image/*').then((f) => {
           if (!f) return;
-          FW.readAsDataURL(f).then((url) => {
-            const w = prompt('图片宽度（像素，留空为原始大小）：', '420');
+          FW.readAsDataURL(f).then(async (url) => {
+            const w = await FW.prompt('图片宽度（像素，留空为原始大小）：', '420', { title: '插入图片', type: 'number' });
             const style = w && !isNaN(+w) ? ' style="width:' + (+w) + 'px"' : '';
             exec('insertHTML', '<p><img src="' + url + '"' + style + '></p>');
           });
@@ -291,7 +291,7 @@
         return;
       }
       if (name === 'insertLink') {
-        const url = prompt('请输入链接地址：', 'https://');
+        const url = await FW.prompt('请输入链接地址：', 'https://', { title: '插入链接' });
         if (url) exec('createLink', url);
         return;
       }

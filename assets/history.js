@@ -20,9 +20,9 @@
     return ts;
   }
 
-  function manualSnapshot(doc) {
+  async function manualSnapshot(doc) {
     if (!doc) return null;
-    const note = prompt('给这个版本加个备注（可留空）：', '');
+    const note = await FW.prompt('给这个版本加个备注（可留空）：', '', { title: '保存版本', multiline: true, rows: 2 });
     if (note === null) return null;
     const ts = Store.snapshot(doc, note, { force: true });
     if (ts) FW.toast('已保存版本 · ' + FW.fmtTime(ts));
@@ -62,15 +62,15 @@
     modal.addEventListener('click', (e) => {
       if (e.target === modal || e.target.closest('[data-hv-close]')) close();
     });
-    $('#hvSnap', modal).addEventListener('click', () => {
+    $('#hvSnap', modal).addEventListener('click', async () => {
       const doc = currentDoc();
       if (!doc) return;
-      const ts = manualSnapshot(doc);
+      const ts = await manualSnapshot(doc);
       if (ts) renderList();
     });
-    $('#hvClear', modal).addEventListener('click', () => {
+    $('#hvClear', modal).addEventListener('click', async () => {
       if (!curDocId) return;
-      if (!confirm('确定清空该文档的全部历史版本？此操作不可恢复。')) return;
+      if (!(await FW.confirm('确定清空该文档的全部历史版本？此操作不可恢复。', { title: '清空历史版本', okText: '清空' }))) return;
       Store.clearVersions(curDocId);
       previewTs = null;
       renderList();

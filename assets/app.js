@@ -429,7 +429,7 @@
       }
       if (id === 'png') {
         if (doc.type !== 'slide') { FW.toast('当前文档不支持导出图片'); return; }
-        const idx = parseInt(prompt('导出第几页为图片？（当前文档共 ' + doc.data.slides.length + ' 页）', '1'), 10) - 1;
+        const idx = parseInt(await FW.prompt('导出第几页为图片？（当前文档共 ' + doc.data.slides.length + ' 页）', '1', { title: '导出图片', type: 'number' }), 10) - 1;
         if (isNaN(idx) || idx < 0 || idx >= doc.data.slides.length) return;
         const blob = await slideToPng(doc, idx);
         FW.downloadBlob(doc.title + '_第' + (idx + 1) + '页.png', blob);
@@ -536,7 +536,7 @@
       const c = e.target.closest('.tpl-card');
       if (c) useTemplate(c.dataset.tpl);
     });
-    $('#recentList').addEventListener('click', (e) => {
+    $('#recentList').addEventListener('click', async (e) => {
       const item = e.target.closest('.recent-item');
       const btn = e.target.closest('button');
       if (!item) return;
@@ -548,10 +548,10 @@
       if (act === 'open') openDoc(d);
       else if (act === 'copy') { const c = Store.duplicate(id); if (c) { FW.toast('已创建副本'); renderRecent($('#homeSearch').value.trim()); updateStorageInfo(); } }
       else if (act === 'rename') {
-        const n = prompt('重命名：', d.title);
+        const n = await FW.prompt('重命名：', d.title, { title: '重命名文档' });
         if (n && n.trim()) { d.title = n.trim(); Store.upsert(d); renderRecent($('#homeSearch').value.trim()); if (currentDoc && currentDoc.id === id) $('#docTitle').value = d.title; }
       } else if (act === 'del') {
-        if (confirm('确定删除「' + d.title + '」？\n文档会移到回收站，可以随时还原。')) {
+        if (await FW.confirm('确定删除「' + d.title + '」？\n文档会移到回收站，可以随时还原。', { title: '删除文档', okText: '移入回收站' })) {
           Store.trashDoc(id);
           renderRecent($('#homeSearch').value.trim());
           updateStorageInfo();
@@ -578,6 +578,14 @@
       if (b) b.style.display = hasBridge ? 'inline-block' : 'none';
       const h = $('#appFolderHint');
       if (h) h.textContent = hasBridge ? '把整个文件夹拷给别人，对方双击 exe 就能用' : '';
+      // AGPL 第 5 条要求分发物带有显著声明：桌面版内置 MuPDF（AGPL-3.0），
+      // 因此桌面版整体以 AGPL-3.0 发布；网页版不含 MuPDF，仍是 MIT。
+      const lic = $('#aboutLicense');
+      if (lic) {
+        lic.textContent = hasBridge
+          ? '桌面版内置 MuPDF（AGPL-3.0），因此桌面版整体按 AGPL-3.0-or-later 发布；完整源码见项目仓库。网页版不含 MuPDF，仍为 MIT 许可证。'
+          : '本软件为 MIT 许可证，可自由使用、修改、分发。';
+      }
       const cb = $('#setAutoOpen');
       if (cb) cb.checked = Store.settings().autoOpenLast !== false;
       $('#aboutMask').classList.add('on');

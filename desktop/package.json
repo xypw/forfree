@@ -4,7 +4,7 @@
   "description": "ForFree 办公套件 —— 离线可用的桌面版办公工具",
   "main": "main.js",
   "author": "ForFree",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "scripts": {
     "sync": "node sync-web.js",
@@ -22,10 +22,26 @@
   "build": {
     "appId": "com.forfree.desktop",
     "productName": "ForFree",
-    "directories": { "output": "dist" },
-    "files": ["main.js", "preload.js", "build/icon.png", "web/**/*", "package.json"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "LICENSE",
+      "build/icon.png",
+      "web/**/*",
+      "package.json"
+    ],
     "win": {
-      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.ico",
       "signAndEditExecutable": false
     },
@@ -35,5 +51,8 @@
     },
     "compression": "maximum"
   },
-  "comment": "signAndEditExecutable=false 是为了绕开 winCodeSign 解压需要管理员权限的问题。app exe 的图标与版本信息由 tools/apply-icon.js 在 --dir 之后、--prepackaged 之前用 rcedit 补上（NSIS 自解压包不能用 rcedit，会写坏）。"
+  "comment": "signAndEditExecutable=false 是为了绕开 winCodeSign 解压需要管理员权限的问题。app exe 的图标与版本信息由 tools/apply-icon.js 在 --dir 之后、--prepackaged 之前用 rcedit 补上（NSIS 自解压包不能用 rcedit，会写坏）。",
+  "dependencies": {
+    "mupdf": "^1.28.1"
+  }
 }

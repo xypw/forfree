@@ -254,6 +254,80 @@ async function runSelfTest() {
     console.log('  PDF 工作台：' + pdfInfo);
     await shoot('05-PDF工作台');
 
+    // PDF 编辑文字（桌面版专属：本地 mupdf 真删原文 + canvas 贴图写新字）
+    // 走真实交互路径：切工具 → 鼠标框选 → 自实现弹窗输入 → 等 PDF 重载 → 数像素验证
+    const editInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      var mk = function(t, p){ return new MouseEvent(t, { bubbles:true, cancelable:true, clientX:p.x, clientY:p.y, view:window }); };
+      var frac = { x0:0.10, y0:0.10, x1:0.61, y1:0.17 };   // 标题所在区域（页面比例）
+
+      function pageHost(){ return document.querySelector('#pdfPages .pdf-page'); }
+      // 统计「标题区域」里的深色像素数（渲染画布直接读像素）
+      function darkCount(){
+        var host = pageHost(); if (!host) return -1;
+        var cv = host.querySelector('canvas'); if (!cv || !cv.width) return -1;
+        var x0 = Math.floor(cv.width*frac.x0), x1 = Math.ceil(cv.width*frac.x1);
+        var y0 = Math.floor(cv.height*frac.y0), y1 = Math.ceil(cv.height*frac.y1);
+        var d = cv.getContext('2d').getImageData(x0, y0, x1-x0, y1-y0).data;
+        var n = 0; for (var i=0;i<d.length;i+=4) if (d[i]<128 && d[i+1]<128 && d[i+2]<128) n++;
+        return n;
+      }
+      async function selectAndInput(text){
+        FW.Editors.pdf.cmd('tool:edittext');
+        var host = pageHost();
+        var layer = host.querySelector('.annotLayer') || host;
+        var r = host.getBoundingClientRect();
+        var pt = function(fx, fy){ return { x: r.left + r.width*fx, y: r.top + r.height*fy }; };
+        layer.dispatchEvent(mk('mousedown', pt(frac.x0, frac.y0)));
+        layer.dispatchEvent(mk('mousemove', pt(frac.x1, frac.y1)));
+        window.dispatchEvent(mk('mouseup', pt(frac.x1, frac.y1)));
+        await sleep(450);
+        var inp = document.querySelector('.fw-prompt-input');
+        if (!inp) return false;
+        inp.value = text;
+        document.querySelector('.fw-prompt-mask [data-act="ok"]').click();
+        await sleep(3600);
+        return true;
+      }
+
+      var before = darkCount();
+      var shown1 = await selectAndInput('');                    // ① 留空 = 只擦除
+      var afterErase = darkCount();
+      var shown2 = await selectAndInput('ForFree 桌面版已改写此标题');  // ② 写入新文字
+      var afterWrite = darkCount();
+      return JSON.stringify({ promptShown: shown1 && shown2, before: before, afterErase: afterErase, afterWrite: afterWrite });
+    })()`);
+    console.log('  PDF 编辑文字：' + editInfo);
+    await shoot('05b-PDF编辑文字');
+
+    // 自实现弹窗（Electron 不支持 window.prompt，全项目已改为 FW.prompt / FW.confirm）
+    const dlgInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      // 先确认原生 prompt 在 Electron 里确实不可用（这就是当初要自实现的原因）
+      var nativeBroken = false;
+      try { window.prompt('x', ''); } catch (e) { nativeBroken = true; }
+      // ① 输入并确定 → 拿到输入值
+      var p1 = FW.prompt('测试输入：', '默认值', { title: '测试' });
+      await sleep(250);
+      var inp = document.querySelector('.fw-prompt-input');
+      var shown = !!inp;
+      var defaulted = inp ? inp.value : '';
+      if (inp) { inp.value = '用户输入的内容'; document.querySelector('.fw-prompt-mask [data-act="ok"]').click(); }
+      var v1 = await p1;
+      // ② 取消 → null
+      var p2 = FW.prompt('再测一次：', 'x');
+      await sleep(200);
+      document.querySelector('.fw-prompt-mask [data-act="cancel"]').click();
+      var v2 = await p2;
+      // ③ confirm → true
+      var p3 = FW.confirm('确定吗？');
+      await sleep(200);
+      document.querySelector('.fw-prompt-mask [data-act="ok"]').click();
+      var v3 = await p3;
+      return JSON.stringify({ nativeBroken: nativeBroken, shown: shown, defaulted: defaulted, value: v1, cancelled: v2, confirmed: v3 });
+    })()`);
+    console.log('  自实现弹窗：' + dlgInfo);
+
     // 格式转换中心
     await js(`FW.app.showConvert(); 'ok'`);
     await new Promise((r) => setTimeout(r, 400));
@@ -783,6 +857,62 @@ function setupShareIpc() {
   });
 }
 
+/* ---------------- PDF 擦除区域（桌面版专属：用本地 mupdf 真正删除 PDF 已有内容） ----------------
+   为什么网页版做不到、桌面版可以：浏览器里只能「批注」（浮在内容之上），动不了 PDF 已有的内容；
+   而主进程可以调用 mupdf（WebAssembly），用 Redact 注释 + applyRedactions() 把内容**永久删除**。
+
+   两个必须注意的点（都是实测踩出来的）：
+   1) applyRedactions() 的第一个参数 black_boxes 默认是 true —— 它会在被擦除的位置画**黑块**。
+      我们要的是「抹掉原文后留白」，所以必须显式传 false。
+   2) saveToBuffer().asUint8Array() 返回的是**WASM 堆内存的视图**，不是拷贝。
+      之后任何一次 mupdf 调用（分配/扩容）都会把它 detach 掉，再读就报
+      "Cannot perform Construct on a detached ArrayBuffer"。所以这里立刻 Buffer.from() 拷一份。
+   3) MuPDF 是**逐字形**判定命中：只有 bbox 落在擦除框内的字形才会被删。
+      框小了会残留半个字，这是预期行为。
+
+   坐标系：MuPDF 页面坐标 y 轴「向下」（与 PDF 规范相反），而 pdf.js 的 viewport 坐标同样是
+   y 向下 —— 所以渲染进程把「视口坐标 ÷ scale」直接当 rect 传进来即可，不需要翻转 y。
+
+   新文字**不在这里写**：MuPDF 的 FreeText 注释只会引用它内置的非嵌入字体（如 /Song，
+   编码 UniGB-UTF16-H），既不嵌字体、又依赖外部 CMap，别的阅读器（含本应用自己的 pdf.js）
+   很可能显示不出来。新文字改由渲染进程 canvas 渲染成图片、用 pdf-lib 贴回页面，
+   这样任何阅读器都能看到、中文也绝对正确。 */
+function setupPdfEditIpc() {
+  // mupdf 是 ESM-only，而主进程是 CommonJS，必须用动态 import 懒加载
+  let mupdfPromise = null;
+  const loadMupdf = () => (mupdfPromise = mupdfPromise || import('mupdf'));
+
+  // regions: [{ page: 0, rect: [x0,y0,x1,y1] }]  （页面点坐标，y 向下）
+  ipcMain.handle('ff:pdf-redact', async (evt, payload) => {
+    try {
+      const mupdf = await loadMupdf();
+      const doc = mupdf.Document.openDocument(Buffer.from(payload.bytes), 'application/pdf');
+
+      const byPage = new Map();
+      (payload.regions || []).forEach((op) => {
+        const p = op.page | 0;
+        if (!byPage.has(p)) byPage.set(p, []);
+        byPage.get(p).push(op);
+      });
+
+      for (const [pi, ops] of byPage) {
+        const page = doc.loadPage(pi);
+        ops.forEach((o) => {
+          const a = page.createAnnotation('Redact');
+          a.setRect(o.rect);
+          a.update();
+        });
+        page.applyRedactions(false);   // ★ false = 不画黑块，只删内容
+      }
+
+      const out = Buffer.from(doc.saveToBuffer('').asUint8Array());  // ★ 拷贝出 WASM 内存
+      return { ok: true, bytes: out };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  });
+}
+
 /* ---------------- 下载（导出文件） ---------------- */
 function setupDownloads() {
   session.defaultSession.on('will-download', (event, item) => {
@@ -895,6 +1025,7 @@ if (!gotLock) {
     buildMenu();
     setupDownloads();
     setupShareIpc();
+    setupPdfEditIpc();
     createWindow();
 
     app.on('activate', () => {

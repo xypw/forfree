@@ -14,7 +14,8 @@
 
   const TOOL_LABEL = {
     select: '选择 / 滚动', hand: '抓手', text: '文本批注', highlight: '高亮标记',
-    rect: '矩形框', ellipse: '椭圆圈', arrow: '箭头', ink: '自由画笔', eraser: '橡皮擦', image: '图片图章'
+    rect: '矩形框', ellipse: '椭圆圈', arrow: '箭头', ink: '自由画笔', eraser: '橡皮擦', image: '图片图章',
+    edittext: '编辑文字（改 PDF 原文，桌面版）'
   };
 
   let state = null;      // 当前 PDF 会话
@@ -578,6 +579,13 @@
         repaintLayer(box, pid);
         return;
       }
+      // 「编辑文字」：拖拽框选一块区域，松手后弹输入框（桌面版专属）
+      if (tool === 'edittext') {
+        drawing = { id: uid(), pid: pid, type: 'rect', x: x, y: y, w: 0, h: 0, _ox: x, _oy: y, color: '#D93B2B', opacity: 1, lineW: 2, _edit: true };
+        state.annots.push(drawing);
+        repaintLayer(box, pid);
+        return;
+      }
       // 拖拽生成矩形类
       drawing = { id: uid(), pid: pid, type: tool, x: x, y: y, w: 0, h: 0, _ox: x, _oy: y, color: toolColor, opacity: tool === 'highlight' ? 0.36 : 1, lineW: Math.max(2, Math.round(toolSize / 5)) };
       state.annots.push(drawing);
@@ -604,6 +612,13 @@
     window.addEventListener('mouseup', () => {
       if (!drawing) return;
       const d = drawing; drawing = null;
+      if (d._edit) {
+        // 临时选框不属于批注，先移除再进入「编辑文字」流程
+        state.annots = state.annots.filter((a) => a.id !== d.id);
+        paintAnnots(); emit();
+        if (d.w >= 8 && d.h >= 8) editTextAt(d);
+        return;
+      }
       if (d.type !== 'ink' && d.type !== 'arrow' && d.w < 4 && d.h < 4) {
         state.annots = state.annots.filter((a) => a.id !== d.id);
       } else if (d.type === 'ink' && d.points.length < 3) {
@@ -1009,11 +1024,12 @@
     m.classList.add('on');
   }
 
-  function addWatermark() {    if (!state) return;
-    const text = prompt('输入水印文字：', '内部资料 · 请勿外传');
+  async function addWatermark() {
+    if (!state) return;
+    const text = await FW.prompt('输入水印文字：', '内部资料 · 请勿外传', { title: '添加水印' });
     if (!text) return;
-    const color = prompt('水印颜色（十六进制）：', '#D93B2B') || '#D93B2B';
-    const size = parseFloat(prompt('字号（磅）：', '48')) || 48;
+    const color = await FW.prompt('水印颜色（十六进制）：', '#D93B2B', { title: '水印颜色' }) || '#D93B2B';
+    const size = parseFloat(await FW.prompt('字号（磅）：', '48', { title: '水印字号', type: 'number' })) || 48;
     pushUndo();
     state.pages.forEach((p) => {
       const rec = srcCache[p.src];
@@ -1033,7 +1049,114 @@
     const box = $('#pdfPages');
     box.className = 'pdf-pages tool-' + t;
     if (global.FW.app) global.FW.app.syncRibbonState({ ['tool:' + t]: true });
-    FW.toast('当前工具：' + TOOL_LABEL[t], 1200);
+    if (t === 'edittext') {
+      FW.toast('编辑文字：框选要改的区域 → 输入新文字。原文会被真正删除，新文字以图片写入（不可再选中）。仅桌面版可用。', 5200);
+    } else {
+      FW.toast('当前工具：' + TOOL_LABEL[t], 1200);
+    }
+  }
+
+  /* ---------- 编辑文字（桌面版专属） ----------
+     框选一块区域 → 两步走：
+       ① 主进程用 mupdf 的 redaction 把这块区域的**原有内容永久删除**（留白，不画黑块）；
+       ② 渲染进程把新文字用 canvas 渲染成透明 PNG，再用 pdf-lib 贴回原位置。
+     为什么要分两步、而不是直接用 PDF 的 FreeText 注释写文字：
+       MuPDF 的 FreeText 只会引用它内置的**非嵌入**字体（/Song，UniGB-UTF16-H 编码），
+       既不嵌字体、又要外部 CMap 才能解码 —— 本应用自己的 pdf.js 没配 cMapUrl，
+       会直接渲染不出来。改成图片后，任何阅读器都显示一致、中文也绝对正确。
+       代价：新文字是图片，不能再被选中/搜索（这是这条路径的取舍，已在界面上说明）。
+     坐标说明：框选得到的是「页面点」坐标（视口像素 ÷ scale，y 轴向下），与 MuPDF 一致，
+     直接当 rect 传即可；贴图时再用 pdf.js 的 convertToPdfPoint 换成 PDF 坐标（y 向上）。 */
+  async function editTextAt(d) {
+    if (!window.forfree || typeof window.forfree.redactPdf !== 'function') {
+      FW.toast('「编辑文字」仅桌面版可用：网页版改不了 PDF 已有内容（只能批注）。', 4600);
+      return;
+    }
+    const pageObj = state.pages.find((p) => p.pid === d.pid);
+    if (!pageObj) return;
+    const input = await FW.prompt('输入替换后的文字（留空＝只擦除这块内容）：', '', { title: '编辑文字', multiline: true, rows: 2 });
+    if (input === null) return;
+    const rect = [d.x, d.y, d.x + d.w, d.y + d.h];   // 显示坐标（= 总旋转下的视口坐标，已 ÷ scale）
+    FW.toast('正在修改 PDF…', 2600);
+    try {
+      // ① 真删原文（注意：要给 mupdf 传「只含 PDF 自身 /Rotate」的坐标，见 toMuPdfRect）
+      const muRect = await toMuPdfRect(pageObj, rect);
+      const res = await window.forfree.redactPdf(state.fileBytes, [{ page: pageObj.idx, rect: muRect }]);
+      if (!res || !res.ok) { FW.toast('修改失败：' + ((res && res.error) || '未知错误'), 4600); return; }
+      let bytes = res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
+      // ② 写入新文字（作为图片贴回，用显示坐标 + 总旋转换算 PDF 坐标）
+      if (input) bytes = await drawTextIntoPdf(bytes, pageObj, rect, input);
+      await loadBytes(bytes, state.title + '.pdf');
+      FW.toast(input ? '已修改：原文已删除，新文字已写入（文字为图片，不可再选中）。' : '已擦除所选区域。批注已随重载清空。', 4600);
+    } catch (e) {
+      FW.toast('修改失败：' + (e && e.message ? e.message : e), 4600);
+    }
+  }
+
+  /* 把「显示坐标」的矩形换算成 mupdf 能理解的页面坐标。
+     坑在这里：mupdf 的页面空间是**只含 PDF 自身 /Rotate** 的（/Rotate 90 时 getBounds 返回 842x595），
+     而工作台显示的是「/Rotate + 用户再旋转」的叠加结果。用户转过 90/180/270 时两者不一致，
+     直接把手上的显示坐标丢给 mupdf 会擦错位置（实测旋转 90 时完全擦不中）。
+     做法：显示坐标 →(总旋转视口)→ PDF 用户空间 →(仅固有旋转视口)→ mupdf 页面坐标。 */
+  async function toMuPdfRect(pageObj, rect) {
+    await ensureSizes(pageObj.src);
+    const rec = srcCache[pageObj.src];
+    const sz = rec && rec.sizes && rec.sizes[pageObj.idx];
+    const intrinsic = (sz && sz.rot) || 0;
+    const total = (intrinsic + (pageObj.rot || 0)) % 360;
+    if (total === intrinsic) return rect;          // 没被用户转过，两个空间重合
+    const pg = await rec.doc.getPage(pageObj.idx + 1);
+    const vpT = pg.getViewport({ scale: 1, rotation: total });
+    const vpI = pg.getViewport({ scale: 1, rotation: intrinsic });
+    const [ax, ay] = vpT.convertToPdfPoint(rect[0], rect[1]);
+    const [bx, by] = vpT.convertToPdfPoint(rect[2], rect[3]);
+    const [mx0, my0] = vpI.convertToViewportPoint(ax, ay);
+    const [mx1, my1] = vpI.convertToViewportPoint(bx, by);
+    return [Math.min(mx0, mx1), Math.min(my0, my1), Math.max(mx0, mx1), Math.max(my0, my1)];
+  }
+
+  /* 把一段文字渲染成透明 PNG 后贴到 PDF 的指定矩形里。
+     - 用 canvas 渲染 → 走系统字体，中文/emoji 都不会出问题，也不依赖任何嵌入字体
+     - 字号先按框高的 72% 取，再按宽度自动缩小，保证长文字不会被裁掉
+     - 用 pdf.js 的 viewport 做坐标换算，这样页面带 /Rotate 时也对 */
+  async function drawTextIntoPdf(bytes, pageObj, rect, text) {
+    // 总旋转 = PDF 自身的 /Rotate + 用户在工作台里转的角度（与 render/导出批注同一算法）
+    await ensureSizes(pageObj.src);
+    const rec = srcCache[pageObj.src];
+    const rot = (((rec && rec.sizes && rec.sizes[pageObj.idx] && rec.sizes[pageObj.idx].rot) || 0) + (pageObj.rot || 0)) % 360;
+    const pg = await pdfjs.getDocument({ data: bytes.slice() }).promise.then((doc) => doc.getPage(pageObj.idx + 1));
+    const vp = pg.getViewport({ scale: 1, rotation: rot });
+    const [ax, ay] = vp.convertToPdfPoint(rect[0], rect[1]);
+    const [bx, by] = vp.convertToPdfPoint(rect[2], rect[3]);
+    const x = Math.min(ax, bx), w = Math.abs(bx - ax);
+    const y = Math.min(ay, by), h = Math.abs(by - ay);
+
+    const png = await textFitPng(text, rect[2] - rect[0], rect[3] - rect[1]);
+    const lib = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+    const page = lib.getPages()[pageObj.idx];
+    if (!page) throw new Error('找不到目标页');
+    const img = await lib.embedPng(png);
+    page.drawImage(img, { x: x, y: y, width: w, height: h });
+    // updateFieldAppearances:false —— 含中文的表单字段会让 pdf-lib 重建外观时报
+    // "WinAnsi cannot encode"，必须关掉（与 pdf-tools.js 同一处理）
+    return await lib.save({ updateFieldAppearances: false });
+  }
+
+  function textFitPng(text, wPt, hPt) {
+    const dpr = 4;
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(2, Math.round(wPt * dpr));
+    cv.height = Math.max(2, Math.round(hPt * dpr));
+    const ctx = cv.getContext('2d');
+    const fontOf = (s) => s + 'px "Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif';
+    let size = Math.max(6, hPt * 0.72) * dpr;
+    ctx.font = fontOf(size);
+    const maxW = cv.width - 2 * dpr;
+    while (size > 6 && ctx.measureText(text).width > maxW) { size -= 0.5; ctx.font = fontOf(size); }
+    ctx.fillStyle = '#000';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, dpr, cv.height / 2);
+    return new Promise((res) => cv.toBlob((b) => b.arrayBuffer().then((ab) => res(new Uint8Array(ab))), 'image/png'));
   }
 
   function zoom(delta) {
@@ -1091,7 +1214,8 @@
             { t: 'btn', g: '↗', label: '箭头', cmd: 'tool:arrow', toggle: true, wide: true },
             { t: 'btn', g: '✎', label: '画笔', cmd: 'tool:ink', toggle: true, wide: true },
             { t: 'btn', g: '⌫', label: '橡皮擦', cmd: 'tool:eraser', toggle: true, wide: true },
-            { t: 'btn', g: '🖼', label: '图片图章', cmd: 'tool:image', toggle: true, wide: true }
+            { t: 'btn', g: '🖼', label: '图片图章', cmd: 'tool:image', toggle: true, wide: true },
+            { t: 'btn', g: '✏', label: '编辑文字', cmd: 'tool:edittext', toggle: true, wide: true }
           ]
         },
         {

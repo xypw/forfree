@@ -198,13 +198,13 @@
       drag = null;
     });
 
-    c.addEventListener('dblclick', (e) => {
+    c.addEventListener('dblclick', async (e) => {
       const el = e.target.closest('.shape');
       if (!el) return;
       const sh = slide().shapes.find((s) => s.id === el.dataset.id);
       if (!sh) return;
       if (sh.type !== 'text') {
-        const t = prompt('输入形状上的文字：', sh.text || '');
+        const t = await FW.prompt('输入形状上的文字：', sh.text || '', { title: '形状文字', multiline: true, rows: 2 });
         if (t != null) { sh.text = t; sh.type = 'text'; renderCanvas(); emit(); }
         return;
       }
