@@ -637,6 +637,83 @@ async function runSelfTest() {
     console.log('  表单叠加层：' + formUi);
     await shoot('12-表单填写');
 
+    // 合并文档下的表单导出（修复前：只导出第 1 个 PDF，合并进来的页全丢）
+    const formMergeInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      function pages(){
+        var h = FW.Editors.pdf.status();
+        var a = /页数：(\\d+)/.exec(h);
+        return a ? +a[1] : -1;
+      }
+      var pagesBefore = pages();
+
+      // 合并一份 3 页的 sample.pdf → 4 页（表单仍在第 1 个源里）
+      var dt = new DataTransfer();
+      dt.items.add(new File([window.__pdf], 'extra.pdf', { type: 'application/pdf' }));
+      document.querySelector('#pdfPages').dispatchEvent(
+        new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt }));
+      await sleep(3200);
+      var pagesMerged = pages();
+
+      // 拦住下载，改成截获字节（自检里弹「另存为」会卡住）
+      var cap = null, orig = FW.downloadBytes;
+      FW.downloadBytes = function(name, bytes, mime){ cap = { name: name, len: bytes.length, bytes: bytes }; };
+      var btn = document.querySelector('#formExport');
+      if (!btn) { FW.downloadBytes = orig; return JSON.stringify({ error: 'no formExport btn', pagesMerged: pagesMerged }); }
+      btn.click();
+      await sleep(4500);
+      FW.downloadBytes = orig;
+
+      var outPages = -1;
+      if (cap) {
+        try {
+          var d = await pdfjsLib.getDocument({ data: cap.bytes.slice(), cMapPacked: true }).promise;
+          outPages = d.numPages;
+        } catch (e) { outPages = -2; }
+      }
+      return JSON.stringify({ pagesBefore: pagesBefore, pagesMerged: pagesMerged,
+        exportedBytes: cap ? cap.len : 0, outPages: outPages, fileName: cap ? cap.name : '' });
+    })()`);
+    console.log('  合并表单导出：' + formMergeInfo);
+
+    // 合并文档下的压缩（修复前：只压缩第 1 个 PDF）
+    // 文字型 PDF 压缩后必然变大（会被「保留原文件」拦掉），所以这里拦腰换掉压缩函数，
+    // 只验证「喂给压缩器的字节是不是当前页面列表的全部页面」。
+    const cmpMergeInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      var pages = -1;
+      var h = FW.Editors.pdf.status();
+      var a = /页数：(\\d+)/.exec(h); pages = a ? +a[1] : -1;
+
+      FW.Editors.pdf.cmd('compress');
+      await sleep(700);
+      var mask = document.querySelector('#pdfCompressMask');
+      var dialogText = mask ? (mask.querySelector('.modal-body') || {}).textContent || '' : '';
+
+      var origC = PDFTOOLS.compress, origCB = PDFTOOLS.compressBytes;
+      var called = { doc: 0, bytes: 0, pages: -1 };
+      PDFTOOLS.compress = function(doc, preset, cb){ called.doc++; return Promise.resolve({ bytes: new Uint8Array(8) }); };
+      PDFTOOLS.compressBytes = async function(bytes, preset, cb){
+        called.bytes++;
+        var d = await pdfjsLib.getDocument({ data: bytes.slice(), cMapPacked: true }).promise;
+        called.pages = d.numPages;
+        return { bytes: new Uint8Array(8) };
+      };
+      var cap = null, origDl = FW.downloadBytes;
+      FW.downloadBytes = function(name, bytes){ cap = { name: name, len: bytes.length }; };
+
+      var opt = mask && mask.querySelector('[data-cc]');
+      if (opt) opt.click();
+      await sleep(6000);
+      PDFTOOLS.compress = origC; PDFTOOLS.compressBytes = origCB; FW.downloadBytes = origDl;
+
+      return JSON.stringify({ sessionPages: pages, usedCompressBytes: called.bytes,
+        usedCompressDoc: called.doc, fedPages: called.pages,
+        dialogMentionsMerged: dialogText.indexOf('合并而成') >= 0,
+        downloaded: cap ? cap.len : 0 });
+    })()`);
+    console.log('  合并压缩：' + cmpMergeInfo);
+
     // 图片工具箱
     await js(`(function(){
       window.__imgDone = null;

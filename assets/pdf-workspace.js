@@ -30,6 +30,10 @@
 
   const srcCache = {};   // sourceIdx -> {doc, bytes}
 
+  /* 表单字段的取值键。必须带上「源」，否则合并文档里两个文件有同名字段
+     （比如都叫 "name"）会互相覆盖。 */
+  function fkey(f) { return (f.src || 0) + '::' + f.name; }
+
   function emit() { if (onChange) onChange(); }
 
   /* ============================================================
@@ -64,8 +68,10 @@
       // 探测表单字段（有 AcroForm 才能填写）
       try {
         const libDoc = await getPdfLibDoc(0);
-        state.formFields = global.PDFTOOLS ? global.PDFTOOLS.readFields(libDoc) : [];
-        state.formFields.forEach((f) => { state.formValues[f.name] = f.value; });
+        const fields = global.PDFTOOLS ? global.PDFTOOLS.readFields(libDoc) : [];
+        fields.forEach((f) => { f.src = 0; });
+        state.formFields = fields;
+        state.formFields.forEach((f) => { state.formValues[fkey(f)] = f.value; });
       } catch (e) { state.formFields = []; }
 
       render();
@@ -89,6 +95,17 @@
     const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
     state.sources.push({ bytes: bytes, name: 'merged' });
     srcCache[idx] = { doc: doc, bytes: bytes };
+    // 顺手探测这个源里的表单字段 —— 合并进来的 PDF 也可能带表单，
+    // 不能只认第 0 个源，否则「表单填写」在合并文档里会漏掉后面这些文件。
+    try {
+      const libDoc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+      const fields = global.PDFTOOLS ? global.PDFTOOLS.readFields(libDoc) : [];
+      fields.forEach((f) => {
+        f.src = idx;
+        state.formFields.push(f);
+        state.formValues[fkey(f)] = f.value;
+      });
+    } catch (e) { /* 单个源没表单或解析失败都不影响阅读 */ }
     return { idx: idx, count: doc.numPages };
   }
 
@@ -154,7 +171,7 @@
     }
     const n = state.formFields.length;
     const filled = state.formFields.filter((f) => {
-      const v = state.formValues[f.name];
+      const v = state.formValues[fkey(f)];
       return v !== '' && v !== false && v != null;
     }).length;
     bar.innerHTML =
@@ -178,14 +195,15 @@
       const p = state.pages[i];
       const rec = srcCache[p.src];
       if (!rec) continue;
+      await ensureSizes(p.src);   // 新合并进来的源可能还没算过尺寸
       const host = box.querySelector('.pdf-page[data-pi="' + i + '"]');
       if (!host) continue;
       const layer = host.querySelector('.formLayer');
       if (!layer) continue;
       layer.innerHTML = '';
 
-      // 这一页上的字段（field.page 是 pdf-lib 文档里的原始页号）
-      const mine = state.formFields.filter((f) => f.page === p.idx && p.src === 0);
+      // 这一页上的字段（field.page 是「该源内」的页号，所以还要比对 src）
+      const mine = state.formFields.filter((f) => f.page === p.idx && f.src === p.src);
       if (!mine.length) continue;
 
       const rot = (rec.sizes[p.idx].rot + p.rot) % 360;
@@ -240,17 +258,17 @@
         el.title = f.name + '（' + f.type + '）';
 
         if (f.type === 'checkbox') {
-          el.checked = state.formValues[f.name] === 'on' || state.formValues[f.name] === true;
+          el.checked = state.formValues[fkey(f)] === 'on' || state.formValues[fkey(f)] === true;
         } else if (f.type === 'radio') {
-          el.checked = state.formValues[f.name] === el.value;
+          el.checked = state.formValues[fkey(f)] === el.value;
         } else {
-          el.value = state.formValues[f.name] || '';
+          el.value = state.formValues[fkey(f)] || '';
         }
         if (el.value || el.checked) el.classList.add('is-filled');
 
         const commit = () => {
-          if (f.type === 'checkbox') state.formValues[f.name] = el.checked;
-          else state.formValues[f.name] = el.value;
+          if (f.type === 'checkbox') state.formValues[fkey(f)] = el.checked;
+          else state.formValues[fkey(f)] = el.value;
           el.classList.toggle('is-filled', f.type === 'checkbox' ? el.checked : !!el.value);
           renderFormBar();
         };
@@ -286,19 +304,66 @@
   async function exportForm(flatten) {
     if (!state) return;
     if (!state.formFields.length) { FW.toast('没有表单字段'); return; }
+    const multi = state.sources.length > 1;
     FW.toast('正在生成 PDF……', 3000);
     try {
-      // 用干净的副本写入，避免污染缓存里的文档
-      const fresh = await PDFLib.PDFDocument.load(state.sources[0].bytes, { ignoreEncryption: true });
-      const r = await global.PDFTOOLS.fillAndSave(fresh, state.formValues, flatten);
-      const suffix = flatten ? (r.flattened ? '_已填写_扁平化.pdf' : '_已填写.pdf') : '_已填写.pdf';
-      FW.downloadBytes(state.title + suffix, r.bytes, 'application/pdf');
-      if (flatten && !r.flattened) {
-        FW.toast('已导出 ' + r.applied.length + ' 个字段。注意：扁平化未成功，已按普通填写导出，接收方仍可编辑。', 6000);
-      } else if (flatten && r.flattened && r.flattenError) {
-        FW.toast('已导出并扁平化 ' + r.applied.length + ' 个字段。字段值含中文，已改用图像化方式扁平化（接收方不可编辑，但该部分文字不可再选中）。', 6000);
+      // 按「字段属于哪个源」分组，逐源填值（合并文档里表单可能在任意一个 PDF 里）。
+      // 多源时**必须**扁平化：PDF 的 AcroForm 无法跨文件合并 ——
+      // 实测 pdf-lib 的 copyPages 会保留页面上的 /Widget 注释，但把表单字典丢掉
+      // （新文档 getForm().getFields() 变空）。只有把值烧成外观 / 页面内容才带得过去。
+      const bySrc = {};
+      state.formFields.forEach((f) => {
+        const si = f.src || 0;
+        if (!bySrc[si]) bySrc[si] = [];
+        bySrc[si].push(f);
+      });
+      const doFlatten = multi || flatten;
+      const filled = {};        // srcIdx -> 填好值（并按需扁平化）的字节
+      let appliedTotal = 0, anyFlattened = true, flattenErr = null;
+      for (const si of Object.keys(bySrc)) {
+        // 用干净的副本写入，避免污染缓存里的文档
+        const fresh = await PDFLib.PDFDocument.load(state.sources[si].bytes, { ignoreEncryption: true });
+        const vals = {};
+        bySrc[si].forEach((f) => { vals[f.name] = state.formValues[fkey(f)]; });
+        const r = await global.PDFTOOLS.fillAndSave(fresh, vals, doFlatten);
+        appliedTotal += r.applied.length;
+        if (!r.flattened) anyFlattened = false;
+        if (r.flattenError) flattenErr = r.flattenError;
+        filled[si] = r.bytes;
+      }
+
+      let outBytes;
+      if (!multi) {
+        outBytes = filled[0];
       } else {
-        FW.toast('已导出，写入 ' + r.applied.length + ' 个字段' + (r.flattened ? '（已扁平化，不可再编辑）' : ''), 3400);
+        // 按当前页面列表重建：有表单的源用「已填值」的版本，其余用原始版本。
+        // 这样页面顺序、旋转、删页结果都能保住，不会退化成"只有第 1 个 PDF"。
+        const out = await PDFLib.PDFDocument.create();
+        const cache = {};
+        for (const p of state.pages) {
+          const k = (filled[p.src] ? 'f' : 'o') + p.src;
+          if (!cache[k]) {
+            cache[k] = await PDFLib.PDFDocument.load(
+              filled[p.src] || state.sources[p.src].bytes, { ignoreEncryption: true });
+          }
+          const [pg] = await out.copyPages(cache[k], [p.idx]);
+          if (p.rot) pg.setRotation(PDFLib.degrees(((pg.getRotation().angle || 0) + p.rot) % 360));
+          out.addPage(pg);
+        }
+        outBytes = await out.save();
+      }
+
+      const suffix = (doFlatten && anyFlattened) ? '_已填写_扁平化.pdf' : '_已填写.pdf';
+      FW.downloadBytes(state.title + suffix, outBytes, 'application/pdf');
+      if (multi) {
+        FW.toast('已导出 ' + appliedTotal + ' 个字段（' + state.pages.length + ' 页）。' +
+          'PDF 的表单不能跨文件合并，所以合并文档下的表单导出会自动扁平化：字段值变成固定内容，接收方不可再编辑。', 7500);
+      } else if (flatten && !anyFlattened) {
+        FW.toast('已导出 ' + appliedTotal + ' 个字段。注意：扁平化未成功，已按普通填写导出，接收方仍可编辑。', 6000);
+      } else if (flatten && anyFlattened && flattenErr) {
+        FW.toast('已导出并扁平化 ' + appliedTotal + ' 个字段。' + flattenErr, 6500);
+      } else {
+        FW.toast('已导出，写入 ' + appliedTotal + ' 个字段' + (anyFlattened && flatten ? '（已扁平化，不可再编辑）' : ''), 3400);
       }
     } catch (e) {
       console.error(e);
@@ -319,12 +384,17 @@
       document.body.appendChild(m);
       m.addEventListener('click', (e) => { if (e.target === m) m.classList.remove('on'); });
     }
-    const before = state.sources[0].bytes.length;
+    // 多源（合并过）时压缩的是「当前页面列表」合成后的文件，不是第 1 个源
+    const multi = state.sources.length > 1;
+    const before = multi ? 0 : state.sources[0].bytes.length;
+    const head = multi
+      ? '当前文档由 <b>' + state.sources.length + ' 个 PDF 合并而成</b>，共 ' + state.pages.length + ' 页。压缩会先把它们合成一份再处理。'
+      : '当前文件 <b>' + FW.fmtSize(before) + '</b>，共 ' + state.pages.length + ' 页。';
     m.innerHTML =
       '<div class="modal"><div class="modal-head"><h3>压缩 PDF</h3>' +
       '<button class="modal-x" data-cc-close>×</button></div>' +
       '<div class="modal-body">' +
-      '<p class="muted" style="margin-bottom:14px">当前文件 <b>' + FW.fmtSize(before) + '</b>，共 ' + state.pages.length + ' 页。' +
+      '<p class="muted" style="margin-bottom:14px">' + head +
       '压缩会把每页重新渲染成图片再重建 PDF —— 对扫描件、图片型 PDF 效果最明显；纯文字 PDF 会因此变成图片（不可再选中文字）。</p>' +
       '<div class="export-group">' +
       Object.keys(P).map((k) =>
@@ -344,13 +414,24 @@
   }
 
   async function doCompress(preset) {
-    const before = state.sources[0].bytes.length;
+    const multi = state.sources.length > 1;
+    let before = multi ? 0 : state.sources[0].bytes.length;
     FW.toast('正在压缩，请稍候……', 60000);
     try {
-      const rec = srcCache[0];
-      const r = await global.PDFTOOLS.compress(rec.doc, preset, (i, n) => {
+      const cb = (i, n) => {
         if (i === n || i % 3 === 0) FW.toast('正在压缩第 ' + i + '/' + n + ' 页…', 1200);
-      });
+      };
+      let r;
+      if (multi) {
+        // 合并文档：先按页面列表合成一份再压缩。
+        // 直接用 srcCache[0] 只会压缩第 1 个 PDF，合并进来的页全丢。
+        FW.toast('正在合成 ' + state.pages.length + ' 页……', 5000);
+        const merged = await buildPlainPdf();
+        before = merged.length;
+        r = await global.PDFTOOLS.compressBytes(merged, preset, cb);
+      } else {
+        r = await global.PDFTOOLS.compress(srcCache[0].doc, preset, cb);
+      }
       const after = r.bytes.length;
       const ratio = Math.round((1 - after / before) * 100);
       const name = state.title + '_压缩.pdf';
@@ -1149,6 +1230,18 @@
     if (srcIdx === 0) state.fileBytes = newBytes;
     // 该源的缩略图作废，让 renderThumbs 重新生成
     state.pages.forEach((p) => { if (p.src === srcIdx) p.thumb = null; });
+    // 这个源的字节变了（可能刚被 redaction 擦过），表单字段要重新探测，
+    // 否则叠加层会对着已经不存在的控件画输入框。
+    try {
+      const libDoc = await getPdfLibDoc(srcIdx);
+      const fresh = global.PDFTOOLS ? global.PDFTOOLS.readFields(libDoc) : [];
+      state.formFields = state.formFields.filter((f) => (f.src || 0) !== srcIdx);
+      fresh.forEach((f) => {
+        f.src = srcIdx;
+        state.formFields.push(f);
+        if (!(fkey(f) in state.formValues)) state.formValues[fkey(f)] = f.value;
+      });
+    } catch (e) { /* 没表单或解析失败都不影响 */ }
     renderToken++;
     await render();
   }
