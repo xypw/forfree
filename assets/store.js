@@ -65,6 +65,17 @@
        const v = await FW.prompt('重命名：', doc.title);   // 取消返回 null
        const v = await FW.prompt('备注：', '', { multiline: true });
        const ok = await FW.confirm('确定删除？'); */
+  /* 同一时刻只允许一个输入/确认弹窗。否则双击「重命名」会叠出两个，
+     两个 keydown 监听同时响应 Enter，行为会变得莫名其妙。 */
+  let activeDialogClose = null;
+  function claimDialog(close) {
+    if (activeDialogClose) { try { activeDialogClose(null); } catch (e) {} }
+    activeDialogClose = close;
+  }
+  function releaseDialog(close) {
+    if (activeDialogClose === close) activeDialogClose = null;
+  }
+
   function promptBox(message, defaultValue, opts) {
     opts = opts || {};
     return new Promise((resolve) => {
@@ -96,10 +107,12 @@
       const close = (val) => {
         if (done) return;
         done = true;
+        releaseDialog(close);
         document.removeEventListener('keydown', onKey, true);
         mask.remove();
         resolve(val);
       };
+      claimDialog(close);
       const tryOk = () => {
         const v = input.value;
         if (opts.validate) {
@@ -141,10 +154,12 @@
       const close = (val) => {
         if (done) return;
         done = true;
+        releaseDialog(close);
         document.removeEventListener('keydown', onKey, true);
         mask.remove();
         resolve(val);
       };
+      claimDialog(close);
       const onKey = (e) => {
         if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
         else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(true); }

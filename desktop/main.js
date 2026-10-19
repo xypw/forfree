@@ -256,12 +256,19 @@ async function runSelfTest() {
 
     // PDF 编辑文字（桌面版专属：本地 mupdf 真删原文 + canvas 贴图写新字）
     // 走真实交互路径：切工具 → 鼠标框选 → 自实现弹窗输入 → 等 PDF 重载 → 数像素验证
+    // 同时回归三个已修 bug：批注被清空、临时选框残留、合并文档编辑后丢页
     const editInfo = await js(`(async function(){
       var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
       var mk = function(t, p){ return new MouseEvent(t, { bubbles:true, cancelable:true, clientX:p.x, clientY:p.y, view:window }); };
       var frac = { x0:0.10, y0:0.10, x1:0.61, y1:0.17 };   // 标题所在区域（页面比例）
 
       function pageHost(){ return document.querySelector('#pdfPages .pdf-page'); }
+      // 从 status() 里读页数与批注数
+      function nums(){
+        var h = FW.Editors.pdf.status();
+        var a = /页数：(\\d+)/.exec(h), b = /批注：(\\d+)/.exec(h);
+        return { pages: a ? +a[1] : -1, annots: b ? +b[1] : -1 };
+      }
       // 统计「标题区域」里的深色像素数（渲染画布直接读像素）
       function darkCount(){
         var host = pageHost(); if (!host) return -1;
@@ -272,15 +279,17 @@ async function runSelfTest() {
         var n = 0; for (var i=0;i<d.length;i+=4) if (d[i]<128 && d[i+1]<128 && d[i+2]<128) n++;
         return n;
       }
-      async function selectAndInput(text){
-        FW.Editors.pdf.cmd('tool:edittext');
-        var host = pageHost();
+      function dragOn(host, tool, f0, f1){
+        FW.Editors.pdf.cmd('tool:' + tool);
         var layer = host.querySelector('.annotLayer') || host;
         var r = host.getBoundingClientRect();
         var pt = function(fx, fy){ return { x: r.left + r.width*fx, y: r.top + r.height*fy }; };
-        layer.dispatchEvent(mk('mousedown', pt(frac.x0, frac.y0)));
-        layer.dispatchEvent(mk('mousemove', pt(frac.x1, frac.y1)));
-        window.dispatchEvent(mk('mouseup', pt(frac.x1, frac.y1)));
+        layer.dispatchEvent(mk('mousedown', pt(f0[0], f0[1])));
+        layer.dispatchEvent(mk('mousemove', pt(f1[0], f1[1])));
+        window.dispatchEvent(mk('mouseup', pt(f1[0], f1[1])));
+      }
+      async function selectAndInput(text){
+        dragOn(pageHost(), 'edittext', [frac.x0, frac.y0], [frac.x1, frac.y1]);
         await sleep(450);
         var inp = document.querySelector('.fw-prompt-input');
         if (!inp) return false;
@@ -293,12 +302,98 @@ async function runSelfTest() {
       var before = darkCount();
       var shown1 = await selectAndInput('');                    // ① 留空 = 只擦除
       var afterErase = darkCount();
-      var shown2 = await selectAndInput('ForFree 桌面版已改写此标题');  // ② 写入新文字
+
+      // ② 加一条高亮批注，再编辑文字 —— 批注不该被清掉（修复前会被 loadBytes 清空）
+      dragOn(pageHost(), 'highlight', [0.12, 0.30], [0.50, 0.34]);
+      await sleep(400);
+      var annotsAfterAdd = nums().annots;
+
+      var shown2 = await selectAndInput('ForFree 桌面版已改写此标题');
       var afterWrite = darkCount();
-      return JSON.stringify({ promptShown: shown1 && shown2, before: before, afterErase: afterErase, afterWrite: afterWrite });
+      var st = nums();
+      var annotsKept = st.annots;
+      var pagesKept = st.pages;
+
+      // ③ 临时选框残留：拖到一半就派发 blur（模拟 Alt+Tab 切走导致 mouseup 丢失）。
+      //    注意不能调 dragOn —— 它会立刻派发 mouseup，临时框当场就被移除了，测不到东西。
+      var host3 = pageHost();
+      FW.Editors.pdf.cmd('tool:edittext');
+      var layer3 = host3.querySelector('.annotLayer') || host3;
+      var r3 = host3.getBoundingClientRect();
+      var pt3 = function(fx, fy){ return { x: r3.left + r3.width*fx, y: r3.top + r3.height*fy }; };
+      layer3.dispatchEvent(mk('mousedown', pt3(0.12, 0.42)));
+      layer3.dispatchEvent(mk('mousemove', pt3(0.50, 0.46)));
+      var annotsDragging = nums().annots;        // 拖拽中：临时框在，应比原来多 1
+      window.dispatchEvent(new Event('blur'));   // 收不到 mouseup 的情况
+      await sleep(300);
+      var annotsAfterBlur = nums().annots;       // 应回落到原值
+
+      return JSON.stringify({
+        promptShown: shown1 && shown2,
+        before: before, afterErase: afterErase, afterWrite: afterWrite,
+        annotsAfterAdd: annotsAfterAdd, annotsKept: annotsKept, pagesKept: pagesKept,
+        annotsDragging: annotsDragging, annotsAfterBlur: annotsAfterBlur
+      });
     })()`);
     console.log('  PDF 编辑文字：' + editInfo);
     await shoot('05b-PDF编辑文字');
+
+    // 合并进来的页面能否正确编辑（修复前：会去擦第 0 个源 → 擦错文件 + 合并页全丢）
+    const mergeEditInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      var mk = function(t, p){ return new MouseEvent(t, { bubbles:true, cancelable:true, clientX:p.x, clientY:p.y, view:window }); };
+      function nums(){
+        var h = FW.Editors.pdf.status();
+        var a = /页数：(\\d+)/.exec(h), b = /批注：(\\d+)/.exec(h);
+        return { pages: a ? +a[1] : -1, annots: b ? +b[1] : -1 };
+      }
+      var pagesBefore = nums().pages;
+
+      // 走真实 drop 路径再合并一份同样的 PDF → 页数翻倍，多出一个「源」
+      var dt = new DataTransfer();
+      dt.items.add(new File([window.__pdf], 'extra.pdf', { type: 'application/pdf' }));
+      document.querySelector('#pdfPages').dispatchEvent(
+        new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt }));
+      await sleep(3000);
+      var pagesMerged = nums().pages;
+
+      // 在「最后一个页面」上编辑文字（它属于第 2 个源）。用留空 = 只擦除，
+      // 这样「该页标题区像素归零」就是擦对了页面的决定性证据。
+      var hosts = document.querySelectorAll('#pdfPages .pdf-page');
+      var last = hosts[hosts.length - 1];
+      if (!last) return JSON.stringify({ error: 'no page after merge' });
+      function darkOn(el){
+        var cv = el && el.querySelector('canvas'); if (!cv || !cv.width) return -1;
+        var x0 = Math.floor(cv.width*0.10), x1 = Math.ceil(cv.width*0.61);
+        var y0 = Math.floor(cv.height*0.10), y1 = Math.ceil(cv.height*0.17);
+        var d = cv.getContext('2d').getImageData(x0, y0, x1-x0, y1-y0).data;
+        var n = 0; for (var i=0;i<d.length;i+=4) if (d[i]<128 && d[i+1]<128 && d[i+2]<128) n++;
+        return n;
+      }
+      var darkBefore = darkOn(last);
+
+      FW.Editors.pdf.cmd('tool:edittext');
+      var layer = last.querySelector('.annotLayer') || last;
+      var r = last.getBoundingClientRect();
+      var pt = function(fx, fy){ return { x: r.left + r.width*fx, y: r.top + r.height*fy }; };
+      layer.dispatchEvent(mk('mousedown', pt(0.10, 0.10)));
+      layer.dispatchEvent(mk('mousemove', pt(0.61, 0.17)));
+      window.dispatchEvent(mk('mouseup', pt(0.61, 0.17)));
+      await sleep(500);
+      var inp = document.querySelector('.fw-prompt-input');
+      if (!inp) return JSON.stringify({ error: 'no prompt', pagesMerged: pagesMerged });
+      inp.value = '';
+      document.querySelector('.fw-prompt-mask [data-act="ok"]').click();
+      await sleep(4500);
+
+      var pagesAfterEdit = nums().pages;
+      var hosts2 = document.querySelectorAll('#pdfPages .pdf-page');
+      var darkAfter = darkOn(hosts2[hosts2.length - 1]);
+      return JSON.stringify({ pagesBefore: pagesBefore, pagesMerged: pagesMerged,
+        pagesAfterEdit: pagesAfterEdit, darkBefore: darkBefore, darkAfter: darkAfter });
+    })()`);
+    console.log('  合并页编辑：' + mergeEditInfo);
+    await shoot('05c-合并页编辑');
 
     // 自实现弹窗（Electron 不支持 window.prompt，全项目已改为 FW.prompt / FW.confirm）
     const dlgInfo = await js(`(async function(){

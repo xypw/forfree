@@ -609,6 +609,12 @@
       repaintLayer(box, drawing.pid);
     });
 
+    // 窗口失焦时 mouseup 可能收不到，兜底清掉「编辑文字」的临时选框
+    window.addEventListener('blur', () => {
+      drawing = null;
+      clearTempEditBoxes();
+    });
+
     window.addEventListener('mouseup', () => {
       if (!drawing) return;
       const d = drawing; drawing = null;
@@ -750,6 +756,20 @@
     const d = await PDFLib.PDFDocument.load(state.sources[srcIdx].bytes, { ignoreEncryption: true });
     pdfLibCache[srcIdx] = d;
     return d;
+  }
+
+  /* 只把「当前页面列表」合成一份 PDF，不画任何批注。
+     用于「下载原文件」在多源（合并过）场景下 —— 那种情况下 state.fileBytes
+     只是第 1 个 PDF 的字节，直接下载等于只给用户 1/N 页。 */
+  async function buildPlainPdf() {
+    const out = await PDFLib.PDFDocument.create();
+    for (const p of state.pages) {
+      const src = await getPdfLibDoc(p.src);
+      const [pg] = await out.copyPages(src, [p.idx]);
+      if (p.rot) pg.setRotation(PDFLib.degrees(((pg.getRotation().angle || 0) + p.rot) % 360));
+      out.addPage(pg);
+    }
+    return await out.save();
   }
 
   /* ============================================================
@@ -1044,7 +1064,19 @@
     FW.toast('已为 ' + state.pages.length + ' 页添加水印');
   }
 
+  /* 「编辑文字」拖拽时那个红色选框是**临时**的，不属于批注。
+     正常路径在 mouseup 里移除；但 mouseup 有可能丢（拖到窗口外松开、Alt+Tab 切走等），
+     一旦丢了，这个框会永久留在 state.annots 里 —— 会计入批注数、还会被烧进导出的 PDF。
+     所以在切工具和窗口失焦时兜底清一次。 */
+  function clearTempEditBoxes() {
+    if (!state || !state.annots) return;
+    const before = state.annots.length;
+    state.annots = state.annots.filter((a) => !a._edit);
+    if (state.annots.length !== before) { paintAnnots(); emit(); }
+  }
+
   function setTool(t) {
+    clearTempEditBoxes();
     tool = t;
     const box = $('#pdfPages');
     box.className = 'pdf-pages tool-' + t;
@@ -1078,20 +1110,47 @@
     const input = await FW.prompt('输入替换后的文字（留空＝只擦除这块内容）：', '', { title: '编辑文字', multiline: true, rows: 2 });
     if (input === null) return;
     const rect = [d.x, d.y, d.x + d.w, d.y + d.h];   // 显示坐标（= 总旋转下的视口坐标，已 ÷ scale）
+    // 关键：state.fileBytes 只是「第 0 个源」的字节。合并进来的页面属于别的源
+    // （pageObj.src != 0），拿 fileBytes 去 redact 会擦错文件，重载后还会把合并进来的页面全丢掉。
+    const srcIdx = pageObj.src;
+    const srcBytes = (state.sources[srcIdx] && state.sources[srcIdx].bytes) || state.fileBytes;
     FW.toast('正在修改 PDF…', 2600);
     try {
       // ① 真删原文（注意：要给 mupdf 传「只含 PDF 自身 /Rotate」的坐标，见 toMuPdfRect）
       const muRect = await toMuPdfRect(pageObj, rect);
-      const res = await window.forfree.redactPdf(state.fileBytes, [{ page: pageObj.idx, rect: muRect }]);
+      const res = await window.forfree.redactPdf(srcBytes, [{ page: pageObj.idx, rect: muRect }]);
       if (!res || !res.ok) { FW.toast('修改失败：' + ((res && res.error) || '未知错误'), 4600); return; }
       let bytes = res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
       // ② 写入新文字（作为图片贴回，用显示坐标 + 总旋转换算 PDF 坐标）
       if (input) bytes = await drawTextIntoPdf(bytes, pageObj, rect, input);
-      await loadBytes(bytes, state.title + '.pdf');
-      FW.toast(input ? '已修改：原文已删除，新文字已写入（文字为图片，不可再选中）。' : '已擦除所选区域。批注已随重载清空。', 4600);
+      await reloadSource(srcIdx, bytes);
+      FW.toast(input ? '已修改：原文已删除，新文字已写入（文字为图片，不可再选中）。' : '已擦除所选区域。', 4600);
     } catch (e) {
       FW.toast('修改失败：' + (e && e.message ? e.message : e), 4600);
     }
+  }
+
+  /* 只替换「某一个源」的字节，保留其它源、页面顺序与已有批注。
+     为什么不用 loadBytes：loadBytes 会把 state 整个重建为「单源」并清空批注，
+     对合并过的文档（sources.length > 1）等于直接丢掉合并进来的页面。
+     redaction 不改变页数，所以 state.pages 可以原样保留。 */
+  async function reloadSource(srcIdx, newBytes) {
+    const pagesOfSrc = state.pages.filter((p) => p.src === srcIdx).length;
+    const doc = await pdfjs.getDocument({ data: newBytes.slice(), cMapPacked: true }).promise;
+    if (doc.numPages !== pagesOfSrc) {
+      // 页数变了（理论上 redaction 不会）→ 退回整份重载，避免页面索引错位
+      await loadBytes(newBytes, state.title + '.pdf');
+      return;
+    }
+    const old = state.sources[srcIdx];
+    state.sources[srcIdx] = { bytes: newBytes, name: old ? old.name : 'PDF 文档' };
+    srcCache[srcIdx] = { doc: doc, bytes: newBytes };
+    delete pdfLibCache[srcIdx];
+    if (srcIdx === 0) state.fileBytes = newBytes;
+    // 该源的缩略图作废，让 renderThumbs 重新生成
+    state.pages.forEach((p) => { if (p.src === srcIdx) p.thumb = null; });
+    renderToken++;
+    await render();
   }
 
   /* 把「显示坐标」的矩形换算成 mupdf 能理解的页面坐标。
@@ -1125,7 +1184,11 @@
     await ensureSizes(pageObj.src);
     const rec = srcCache[pageObj.src];
     const rot = (((rec && rec.sizes && rec.sizes[pageObj.idx] && rec.sizes[pageObj.idx].rot) || 0) + (pageObj.rot || 0)) % 360;
-    const pg = await pdfjs.getDocument({ data: bytes.slice() }).promise.then((doc) => doc.getPage(pageObj.idx + 1));
+    // 复用工作台已加载的 pdf.js 文档做坐标换算，**不要**再 getDocument 一份：
+    // redaction 不改变页面尺寸与 /Rotate，旧文档的 viewport 完全等价；
+    // 而每次新建 getDocument 不 destroy 会泄漏一个 PDFDocumentProxy（worker 侧数据也不释放），
+    // 连续编辑十几次内存就明显涨上去了。
+    const pg = await rec.doc.getPage(pageObj.idx + 1);
     const vp = pg.getViewport({ scale: 1, rotation: rot });
     const [ax, ay] = vp.convertToPdfPoint(rect[0], rect[1]);
     const [bx, by] = vp.convertToPdfPoint(rect[2], rect[3]);
@@ -1321,10 +1384,25 @@
 
     loadBytes: loadBytes,
 
-    cmd(name, value) {
+    async cmd(name, value) {
       if (name === 'open') return openPdf();
       if (!state && name !== 'open') { FW.toast('请先打开一个 PDF 文件'); return; }
-      if (name === 'saveRaw') { FW.downloadBytes(state.title + '.pdf', state.fileBytes, 'application/pdf'); FW.toast('已下载原文件'); return; }
+      if (name === 'saveRaw') {
+        // 单源：原样下载（连原始对象、元数据都不动）
+        if (state.sources.length <= 1) {
+          FW.downloadBytes(state.title + '.pdf', state.fileBytes, 'application/pdf');
+          FW.toast('已下载原文件');
+          return;
+        }
+        // 多源（合并过）：fileBytes 只是第 1 个 PDF，必须按页面列表重新合成
+        FW.toast('正在合成合并后的 PDF…', 2600);
+        try {
+          const bytes = await buildPlainPdf();
+          FW.downloadBytes(state.title + '.pdf', bytes, 'application/pdf');
+          FW.toast('已导出合并后的 PDF（' + state.pages.length + ' 页）');
+        } catch (e) { FW.toast('导出失败：' + (e && e.message ? e.message : e), 4000); }
+        return;
+      }
       if (name === 'merge') return mergePdf();
       if (name === 'exportAnnotated') return exportAnnotated();
       if (name === 'exportPng') return exportPagesPng();
