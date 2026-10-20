@@ -34,7 +34,14 @@
      （比如都叫 "name"）会互相覆盖。 */
   function fkey(f) { return (f.src || 0) + '::' + f.name; }
 
-  function emit() { if (onChange) onChange(); }
+  /* PDF 工作台是「会话式」的：内容不进文档库，只能靠导出保存。
+     所以这里单独记一个 touched 标记 —— 任何一次内容变更都置 true，
+     导出成功后置回 false。app.js 用它来判断「离开前要不要提醒」。
+     注意不要复用 app.js 的 dirty：那个是给文档库文档用的，对 PDF 没意义。 */
+  function emit() {
+    if (state) state.touched = true;
+    if (onChange) onChange();
+  }
 
   /* ============================================================
      打开 / 载入
@@ -56,7 +63,8 @@
         sources: [src],
         pages: [],
         annots: [],
-        fileBytes: bytes
+        fileBytes: bytes,
+        touched: false      // 有没有未导出的编辑（见 emit）
       };
       srcCache[0] = { doc: doc, bytes: bytes };
       for (let i = 0; i < doc.numPages; i++) state.pages.push({ pid: uid(), src: 0, idx: i, rot: 0 });
@@ -151,11 +159,88 @@
     renderFormBar();
     if (state.formMode) paintForms();
     if (global.FW.app) global.FW.app.refreshStatus();
-    // 逐页渲染（进入视口才画）
-    for (let i = 0; i < state.pages.length; i++) {
-      if (token !== renderToken) return;
-      await renderPage(i, token);
+    // 按视口懒渲染 + 离开范围就释放。
+    // 原来这里是无条件全量渲染（注释还写着「进入视口才画」，与实际不符）。
+    // 为什么必须改：单页 canvas 在 scale 1.25 / dpr 2 下是 1487×2105 ≈ 12 MB，
+    // 50 页同时驻留就是 600 MB、200 页约 2.4 GB —— Chromium 对 canvas 总显存有上限。
+    if (!setupLazyRender(token)) {
+      // 极端环境（拿不到滚动容器）：退回全量渲染
+      for (let i = 0; i < state.pages.length; i++) {
+        if (token !== renderToken) return;
+        await renderPage(i, token);
+      }
     }
+  }
+
+  /* ---------- 视口懒渲染 ----------
+     这里**不用** IntersectionObserver：滚动容器是 position:absolute 的，
+     加上 DOM 刚被整体重建，实测 observer 在「滚到底」时根本收不到回调
+     （诊断数据：元素 connected=true、scrollTop 已到底，但 canvas 仍是默认 300×150）。
+     直接按 scrollTop 算可见范围，行为确定、好推理，也方便测。 */
+  let lazyBound = false;
+  let lazyRaf = 0;
+  let renderedPages = new Set();
+  let pendingPages = new Set();
+  const LAZY_PRE = 1600;   // 视口上下各预取多少像素
+
+  function setupLazyRender(token) {
+    renderedPages = new Set();
+    pendingPages = new Set();
+    const box = $('#pdfScroll');
+    if (!box) return false;
+    if (!lazyBound) {
+      lazyBound = true;
+      box.addEventListener('scroll', () => {
+        if (lazyRaf) return;
+        lazyRaf = requestAnimationFrame(() => { lazyRaf = 0; updateVisiblePages(renderToken); });
+      }, { passive: true });
+      window.addEventListener('resize', () => updateVisiblePages(renderToken));
+    }
+    updateVisiblePages(token);   // 首屏
+    return true;
+  }
+
+  function updateVisiblePages(token) {
+    if (!state || token !== renderToken) return;
+    const box = $('#pdfScroll');
+    if (!box) return;
+    const lo = box.scrollTop - LAZY_PRE;
+    const hi = box.scrollTop + box.clientHeight + LAZY_PRE;
+    const hosts = $$('#pdfPages .pdf-page');
+    for (let i = 0; i < hosts.length; i++) {
+      const el = hosts[i];
+      const top = el.offsetTop;
+      const inRange = (top + el.offsetHeight) > lo && top < hi;
+      if (inRange) {
+        if (!renderedPages.has(i) && !pendingPages.has(i)) {
+          pendingPages.add(i);
+          // 只有真正画成功才计入 renderedPages —— 失败要能重试，
+          // 而且不能静默吞错（之前 catch 空着，排查时完全没线索）
+          renderPage(i, token)
+            .then(() => { pendingPages.delete(i); renderedPages.add(i); })
+            .catch((e) => {
+              pendingPages.delete(i);
+              console.warn('[PDF] 第 ' + (i + 1) + ' 页渲染失败：' + (e && e.message ? e.message : e));
+            });
+        }
+      } else if (renderedPages.has(i)) {
+        renderedPages.delete(i);
+        releasePageCanvas(i);
+      }
+    }
+  }
+
+  /* 把画布后备存储缩到 1×1，让浏览器回收显存。
+     CSS 尺寸保持不变（布局不跳），同时隐藏画布 —— .pdf-page 本身是白底，
+     看起来就是一张还没渲染的白页，而不是一块被拉伸的黑块。 */
+  function releasePageCanvas(i) {
+    const host = $('#pdfPages').querySelector('.pdf-page[data-pi="' + i + '"]');
+    if (!host) return;
+    const cv = host.querySelector('canvas');
+    if (!cv || cv.width <= 1) return;
+    cv.width = 1;
+    cv.height = 1;
+    cv.style.visibility = 'hidden';
   }
 
   /* ---------- 表单栏 ---------- */
@@ -206,7 +291,7 @@
       const mine = state.formFields.filter((f) => f.page === p.idx && f.src === p.src);
       if (!mine.length) continue;
 
-      const rot = (rec.sizes[p.idx].rot + p.rot) % 360;
+      const rot = (((rec.sizes && rec.sizes[p.idx] && rec.sizes[p.idx].rot) || 0) + p.rot) % 360;
       const pg = await rec.doc.getPage(p.idx + 1);
       const vp = pg.getViewport({ scale: scale, rotation: rot });
 
@@ -456,15 +541,27 @@
     return { w: Math.round(w * scale), h: Math.round(h * scale) };
   }
 
+  /* 计算每页的原始尺寸与 /Rotate。
+     **必须并发安全**：懒渲染会同时触发多页，而原来的实现是
+     「先占位 rec.sizes = {} 再逐页 await 填」—— 第二个调用看到 sizes 已存在就
+     直接返回，此时 sizes 还是空的，调用方 rec.sizes[idx].rot 就抛
+     "Cannot read properties of undefined"（实测在合并文档滚到底时必现）。
+     改成缓存 Promise，并且只在全部填完之后才赋值 rec.sizes。 */
   async function ensureSizes(srcIdx) {
     const rec = srcCache[srcIdx];
     if (!rec || rec.sizes) return;
-    rec.sizes = {};
-    for (let i = 1; i <= rec.doc.numPages; i++) {
-      const pg = await rec.doc.getPage(i);
-      const vp = pg.getViewport({ scale: 1 });
-      rec.sizes[i - 1] = { w: vp.width, h: vp.height, rot: pg.rotate || 0 };
+    if (!rec._sizesP) {
+      rec._sizesP = (async () => {
+        const sizes = {};
+        for (let i = 1; i <= rec.doc.numPages; i++) {
+          const pg = await rec.doc.getPage(i);
+          const vp = pg.getViewport({ scale: 1 });
+          sizes[i - 1] = { w: vp.width, h: vp.height, rot: pg.rotate || 0 };
+        }
+        rec.sizes = sizes;
+      })();
     }
+    await rec._sizesP;
   }
 
   async function renderPage(i, token) {
@@ -475,7 +572,7 @@
     await ensureSizes(p.src);
     const host = $('#pdfPages').querySelector('.pdf-page[data-pi="' + i + '"]');
     if (!host) return;
-    const rot = (rec.sizes[p.idx].rot + p.rot) % 360;
+    const rot = (((rec.sizes && rec.sizes[p.idx] && rec.sizes[p.idx].rot) || 0) + p.rot) % 360;
     const pg = await rec.doc.getPage(p.idx + 1);
     const viewport = pg.getViewport({ scale: scale, rotation: rot });
     if (token !== renderToken) return;
@@ -485,6 +582,7 @@
     cv.height = Math.floor(viewport.height * dpr);
     cv.style.width = Math.floor(viewport.width) + 'px';
     cv.style.height = Math.floor(viewport.height) + 'px';
+    cv.style.visibility = '';   // 可能被 releasePageCanvas 隐藏过
     const ctx = cv.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     await pg.render({ canvasContext: ctx, viewport: viewport }).promise;
@@ -988,6 +1086,9 @@
     try {
       const bytes = await buildAnnotatedPdf();
       FW.downloadBytes(state.title + '_已批注.pdf', bytes, 'application/pdf');
+      // 导出的文件已经包含了当前全部编辑，所以不再算「未导出」
+      state.touched = false;
+      if (global.FW.app && global.FW.app.refreshSaveState) global.FW.app.refreshSaveState();
       FW.toast('已导出带批注的 PDF（' + state.pages.length + ' 页）');
     } catch (e) {
       console.error(e);
@@ -1002,7 +1103,7 @@
     for (let i = 0; i < state.pages.length; i++) {
       const p = state.pages[i];
       const rec = srcCache[p.src];
-      const rot = (rec.sizes[p.idx].rot + p.rot) % 360;
+      const rot = (((rec.sizes && rec.sizes[p.idx] && rec.sizes[p.idx].rot) || 0) + p.rot) % 360;
       const pg = await rec.doc.getPage(p.idx + 1);
       const vp = pg.getViewport({ scale: 2, rotation: rot });
       const cv = document.createElement('canvas');
@@ -1244,6 +1345,7 @@
     } catch (e) { /* 没表单或解析失败都不影响 */ }
     renderToken++;
     await render();
+    emit();   // 内容确实变了（「编辑文字」走的这条路），要算进 touched
   }
 
   /* 把「显示坐标」的矩形换算成 mupdf 能理解的页面坐标。
@@ -1463,6 +1565,10 @@
     badgeCls: 'pdf',
     ribbon: ribbon,
     isSession: true,
+
+    /* 有没有「还没导出」的编辑。app.js 用它决定离开前要不要提醒。
+       这就是 isSession 本该有的配套语义（原来只声明了标记、没人用）。 */
+    hasUnsavedWork() { return !!(state && state.touched); },
 
     mount() {
       undoStack = [];

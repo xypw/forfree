@@ -295,6 +295,63 @@
       this._write(this._read().filter((d) => d.id !== id));
     },
 
+    /* ---------------- 整库备份 / 恢复 ----------------
+       为什么需要：所有文档只存在本机 localStorage，清浏览器数据、换浏览器、
+       换设备就全丢了。单个文档能导出「工程文件」，但没有一次性备份全部的通道。 */
+    exportAll() {
+      const readRaw = (k, dflt) => {
+        try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : dflt; } catch (e) { return dflt; }
+      };
+      return {
+        app: 'forfree',
+        kind: 'backup',
+        version: 1,
+        exportedAt: Date.now(),
+        docs: this._read(),
+        trash: readRaw(TRASH_KEY, []),
+        versions: readRaw(VERSION_KEY, {}),
+        settings: readRaw(SETTINGS_KEY, {})
+      };
+    },
+
+    /* 恢复。mode='merge'（默认，安全）：按 id 合并，同 id 取 updated 较新的，
+       现有文档不受影响；mode='replace'：整体覆盖（回收站 / 历史版本 / 设置也一起换）。 */
+    importAll(obj, mode) {
+      if (!obj || obj.app !== 'forfree' || obj.kind !== 'backup' || !Array.isArray(obj.docs)) {
+        return { ok: false, error: '不是有效的 ForFree 备份文件' };
+      }
+      const before = this._read().length;
+      let docs;
+      if (mode === 'replace') {
+        docs = obj.docs.filter((d) => d && d.id).slice();
+      } else {
+        docs = this._read().slice();
+        const idx = new Map();
+        docs.forEach((d, i) => idx.set(d.id, i));
+        obj.docs.forEach((d) => {
+          if (!d || !d.id) return;
+          const i = idx.get(d.id);
+          if (i === undefined) { idx.set(d.id, docs.length); docs.push(d); }
+          else if ((d.updated || 0) > (docs[i].updated || 0)) docs[i] = d;
+        });
+      }
+      // 写失败会返回 false（存储满），此时不要谎报成功
+      if (!this._write(docs)) return { ok: false, error: '本地存储空间不足，恢复失败' };
+
+      if (mode === 'replace') {
+        try {
+          localStorage.setItem(TRASH_KEY, JSON.stringify(obj.trash || []));
+          localStorage.setItem(VERSION_KEY, JSON.stringify(obj.versions || {}));
+          const s = obj.settings || {};
+          // 不恢复 lastDocId / lastDocOwner：那是「本机上次打开哪篇」的窗口状态
+          const keep = this.settings();
+          const merged = Object.assign({}, s, { lastDocId: keep.lastDocId, lastDocOwner: keep.lastDocOwner });
+          localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+        } catch (e) { /* 空间不够就只恢复文档，不致命 */ }
+      }
+      return { ok: true, total: docs.length, added: Math.max(0, docs.length - before) };
+    },
+
     duplicate(id) {
       const d = this.get(id);
       if (!d) return null;

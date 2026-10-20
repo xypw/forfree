@@ -100,6 +100,28 @@ function startServer() {
 }
 
 /* ---------------- 窗口 ---------------- */
+
+/* 渲染进程里的 beforeunload 拦下了关闭（目前只用在「PDF 编辑还没导出」上）。
+   Electron 的默认行为很糟：要么无视 beforeunload 直接关掉、不给任何提示，
+   要么让窗口永远关不掉。所以这里弹一个原生对话框，把选择权交回用户。
+   语义提醒：event.preventDefault() = 无视 beforeunload，继续关闭。 */
+function guardUnsavedClose(win) {
+  win.webContents.on('will-prevent-unload', (event) => {
+    if (SELF_TEST) { event.preventDefault(); return; }   // 自检别卡在对话框上
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['放弃编辑并关闭', '返回继续编辑'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+      title: 'PDF 编辑尚未导出',
+      message: '当前 PDF 的编辑（批注、页面调整、文字修改）不会保存到文档库，关闭窗口后会丢失。',
+      detail: '要保留的话，先点「导出」把 PDF 存下来。'
+    });
+    if (choice === 0) event.preventDefault();   // 允许关闭
+  });
+}
+
 async function createWindow() {
   let baseUrl;
   try {
@@ -138,6 +160,7 @@ async function createWindow() {
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
+  guardUnsavedClose(mainWindow);
 
   // 渲染进程异常退出时给出明确提示，否则自检会静默中断，很难查
   mainWindow.webContents.on('render-process-gone', (e, details) => {
@@ -354,7 +377,7 @@ async function runSelfTest() {
       dt.items.add(new File([window.__pdf], 'extra.pdf', { type: 'application/pdf' }));
       document.querySelector('#pdfPages').dispatchEvent(
         new DragEvent('drop', { bubbles:true, cancelable:true, dataTransfer: dt }));
-      await sleep(3000);
+      await sleep(4500);   // 合并要解析 + 探测表单，别抢在 render() 之前取 DOM 引用
       var pagesMerged = nums().pages;
 
       // 在「最后一个页面」上编辑文字（它属于第 2 个源）。用留空 = 只擦除，
@@ -362,12 +385,39 @@ async function runSelfTest() {
       var hosts = document.querySelectorAll('#pdfPages .pdf-page');
       var last = hosts[hosts.length - 1];
       if (!last) return JSON.stringify({ error: 'no page after merge' });
+      // 视口懒渲染：目标页在文档末尾，先把滚动条拉到底，再等它真的画出来。
+      // 用 scrollIntoView 不可靠（容器是 position:absolute 的 overflow:auto），
+      // 直接设 scrollTop 更稳；再轮询 canvas 是否已被分配真实尺寸。
+      var scrollBox = document.querySelector('#pdfScroll');
+      async function waitDrawn(el){
+        scrollBox.scrollTop = scrollBox.scrollHeight;
+        var t0 = Date.now();
+        var info = { ok: false, connected: true, sh: 0, st: 0, cw: -1, sw: '' };
+        while (Date.now() - t0 < 8000) {
+          var cv = el.querySelector('canvas');
+          info.connected = el.isConnected;
+          info.sh = scrollBox.scrollHeight;
+          info.st = scrollBox.scrollTop;
+          if (cv) { info.cw = cv.width; info.sw = cv.style.width; }
+          if (cv && cv.style.width !== '' && cv.width > 300) {
+            await sleep(400);
+            info.ok = true;
+            return info;
+          }
+          await sleep(200);
+        }
+        return info;
+      }
+      var drewBefore = await waitDrawn(last);
       function darkOn(el){
-        var cv = el && el.querySelector('canvas'); if (!cv || !cv.width) return -1;
+        var cv = el && el.querySelector('canvas');
+        // 未渲染的 canvas 是默认 300×150 且没有内联宽度 —— 明确返回 -1，别当成"全白"
+        if (!cv || cv.style.width === '' || cv.width <= 1) return -1;
         var x0 = Math.floor(cv.width*0.10), x1 = Math.ceil(cv.width*0.61);
         var y0 = Math.floor(cv.height*0.10), y1 = Math.ceil(cv.height*0.17);
         var d = cv.getContext('2d').getImageData(x0, y0, x1-x0, y1-y0).data;
-        var n = 0; for (var i=0;i<d.length;i+=4) if (d[i]<128 && d[i+1]<128 && d[i+2]<128) n++;
+        // 必须排除全透明像素：未渲染的默认画布是 (0,0,0,0)，否则会被当成"很黑"
+        var n = 0; for (var i=0;i<d.length;i+=4) if (d[i+3] > 0 && d[i]<128 && d[i+1]<128 && d[i+2]<128) n++;
         return n;
       }
       var darkBefore = darkOn(last);
@@ -387,10 +437,14 @@ async function runSelfTest() {
       await sleep(4500);
 
       var pagesAfterEdit = nums().pages;
+      // 重载后 DOM 是新的、滚动位置也回到顶部 —— 必须重新滚到底并等绘制
       var hosts2 = document.querySelectorAll('#pdfPages .pdf-page');
-      var darkAfter = darkOn(hosts2[hosts2.length - 1]);
+      var last2 = hosts2[hosts2.length - 1];
+      var drewAfter = last2 ? await waitDrawn(last2) : false;
+      var darkAfter = darkOn(last2);
       return JSON.stringify({ pagesBefore: pagesBefore, pagesMerged: pagesMerged,
-        pagesAfterEdit: pagesAfterEdit, darkBefore: darkBefore, darkAfter: darkAfter });
+        pagesAfterEdit: pagesAfterEdit, drewBefore: drewBefore, drewAfter: drewAfter,
+        darkBefore: darkBefore, darkAfter: darkAfter });
     })()`);
     console.log('  合并页编辑：' + mergeEditInfo);
     await shoot('05c-合并页编辑');
@@ -619,7 +673,9 @@ async function runSelfTest() {
         types: st ? st.formFields.map(function(f){ return f.type; }) : [],
         names: st ? st.formFields.map(function(f){ return f.name; }) : [],
         toggleBtn: !!document.querySelector('#ribbonBody .rb-btn[data-cmd="toggleForm"]'),
-        compressBtn: !!document.querySelector('#ribbonBody .rb-btn[data-cmd="compress"]')
+        compressBtn: !!document.querySelector('#ribbonBody .rb-btn[data-cmd="compress"]'),
+        // 刚打开的 PDF 不该被算成「有未导出编辑」
+        hasUnsavedOnFreshOpen: FW.Editors.pdf.hasUnsavedWork()
       });
     })()`);
     console.log('  表单字段检测：' + formState);
@@ -713,6 +769,76 @@ async function runSelfTest() {
         downloaded: cap ? cap.len : 0 });
     })()`);
     console.log('  合并压缩：' + cmpMergeInfo);
+
+    // 离开 PDF 前的「未导出」提醒（修复前：编辑结果被静默丢弃）
+    const guardInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      var hasUnsaved = FW.Editors.pdf.hasUnsavedWork();
+      var saveStateBefore = (document.querySelector('#saveState') || {}).textContent;
+
+      // 点「返回首页」→ 必须弹确认框，且不能真的离开
+      document.querySelector('#btnHome').click();
+      await sleep(600);
+      var dlg = document.querySelector('.fw-prompt-mask');
+      var dlgText = dlg ? dlg.textContent.slice(0, 26) : '';
+      var stayedInPdfBeforeChoice = document.querySelector('#view-editor').classList.contains('active');
+      if (dlg) dlg.querySelector('[data-act="cancel"]').click();   // 选「返回继续编辑」
+      await sleep(600);
+      var stillInPdf = document.querySelector('#view-editor').classList.contains('active');
+
+      // 导出一次 → 不该再算「未导出」
+      var orig = FW.downloadBytes;
+      FW.downloadBytes = function(){};
+      await FW.Editors.pdf.cmd('exportAnnotated');
+      await sleep(1500);
+      FW.downloadBytes = orig;
+      var hasUnsavedAfterExport = FW.Editors.pdf.hasUnsavedWork();
+      var saveStateAfter = (document.querySelector('#saveState') || {}).textContent;
+
+      return JSON.stringify({
+        hasUnsaved: hasUnsaved, saveStateBefore: saveStateBefore,
+        dialogShown: !!dlg, dialogText: dlgText,
+        stayedInPdfBeforeChoice: stayedInPdfBeforeChoice, stillInPdf: stillInPdf,
+        hasUnsavedAfterExport: hasUnsavedAfterExport, saveStateAfter: saveStateAfter
+      });
+    })()`);
+    console.log('  离开前提醒：' + guardInfo);
+
+    // 视口懒渲染的决定性验证：42 页 PDF 打开后只画视口附近的几页，
+    // 滚动后旧的页被释放（修复前是 42 页一次性全画，约 500 MB canvas）
+    const lazyInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      var src = await PDFLib.PDFDocument.load(window.__pdf, { ignoreEncryption: true });
+      var out = await PDFLib.PDFDocument.create();
+      while (out.getPageCount() < 42) {
+        var ps = await out.copyPages(src, [0, 1, 2]);
+        for (var k = 0; k < ps.length && out.getPageCount() < 42; k++) out.addPage(ps[k]);
+      }
+      var bytes = await out.save();
+      FW.app.openPdf(bytes, '42页测试.pdf');
+      await sleep(5000);
+
+      function stats(){
+        var cvs = document.querySelectorAll('#pdfPages canvas');
+        var drawn = 0, released = 0, never = 0;
+        for (var i = 0; i < cvs.length; i++) {
+          var c = cvs[i];
+          // 未渲染过的 canvas 默认就是 300×150，不能只看 width>1
+          if (c.style.width === '') never++;
+          else if (c.width > 1) drawn++;
+          else released++;
+        }
+        return { total: cvs.length, drawn: drawn, released: released, never: never };
+      }
+      var atTop = stats();
+      var box = document.querySelector('#pdfScroll');
+      box.scrollTop = box.scrollHeight;
+      await sleep(3000);
+      var atBottom = stats();
+      return JSON.stringify({ atTop: atTop, atBottom: atBottom });
+    })()`);
+    console.log('  懒渲染（42 页）：' + lazyInfo);
+    await shoot('05d-懒渲染');
 
     // 图片工具箱
     await js(`(function(){
@@ -900,6 +1026,32 @@ async function runSelfTest() {
     console.log('  重启后恢复：' + restored);
     await shoot('16-重启后恢复');
 
+    // 整库备份 / 恢复（文档只在本机 localStorage，没有这条通道就只能靠运气）
+    const backupInfo = await js(`(function(){
+      var all = FW.Store.exportAll();
+      var n0 = all.docs.length;
+      var victim = all.docs[0];
+      // 幂等：同一份数据再合并一次，不该新增
+      var r0 = FW.Store.importAll(all, 'merge');
+      // 真的删掉一篇，再用备份恢复 → 应该补回来
+      FW.Store.remove(victim.id);
+      var afterRemove = FW.Store.list().length;
+      var r1 = FW.Store.importAll(all, 'merge');
+      var restored = !!FW.Store.get(victim.id);
+      var afterRestore = FW.Store.list().length;
+      // 非法输入必须被拒绝，不能把库写坏
+      var bad = FW.Store.importAll({ foo: 1 }, 'merge');
+      return JSON.stringify({
+        kind: all.kind, version: all.version, docs: n0,
+        hasTrash: Array.isArray(all.trash),
+        hasVersions: !!all.versions && typeof all.versions === 'object',
+        idempotentAdded: r0.added,
+        afterRemove: afterRemove, restored: restored, afterRestore: afterRestore,
+        rejectInvalid: bad.ok === false, rejectMsg: bad.error
+      });
+    })()`);
+    console.log('  整库备份：' + backupInfo);
+
     console.log('  结论：自检通过');
     console.log('==============================\n');
   } catch (e) {
@@ -1021,6 +1173,7 @@ function setupShareIpc() {
         }
       });
       w.once('ready-to-show', () => w.show());
+      guardUnsavedClose(w);
       w.loadURL(appBaseUrl + '/index.html' + (docId ? '?doc=' + encodeURIComponent(docId) : ''));
       return { ok: true };
     } catch (e) {

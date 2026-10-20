@@ -271,19 +271,41 @@
      ============================================================ */
   function markDirty() {
     dirty = true;
+    // PDF 是会话式的，没有「保存到文档库」这回事，只能导出。
+    // 原来这里会排一个 1.2 秒后调 save() 的定时器，而 save() 对 pdf 直接
+    // 把状态改成「已保存」—— 等于告诉用户「存好了」，其实什么都没存。
+    if (currentType === 'pdf') {
+      setSaveState(false, '未导出…');
+      return;
+    }
     setSaveState(false);
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => save(), 1200);
   }
 
-  function setSaveState(saved) {
+  /* 重新按当前编辑器状态刷新保存指示（PDF 导出成功后由 pdf-workspace 调用） */
+  function refreshSaveState() {
+    if (currentType === 'pdf') {
+      const has = !!(FW.Editors.pdf.hasUnsavedWork && FW.Editors.pdf.hasUnsavedWork());
+      setSaveState(!has, '未导出…');
+      return;
+    }
+    setSaveState(!dirty);
+  }
+
+  function setSaveState(saved, dirtyText) {
     const el = $('#saveState');
-    el.textContent = saved ? '已保存' : '未保存…';
+    el.textContent = saved ? '已保存' : (dirtyText || '未保存…');
     el.classList.toggle('dirty', !saved);
   }
 
   function save(silent) {
-    if (currentType === 'pdf') { setSaveState(true); dirty = false; return; }
+    if (currentType === 'pdf') {
+      // 别谎报「已保存」：PDF 只能导出
+      refreshSaveState();
+      dirty = false;
+      return;
+    }
     if (!currentDoc) return;
     const ed = FW.Editors[currentType];
     if (ed && ed.getData) {
@@ -594,6 +616,51 @@
       Store.setSetting('autoOpenLast', e.target.checked);
       FW.toast(e.target.checked ? '下次启动会自动回到上次编辑的文档' : '下次启动会停在首页');
     });
+
+    /* 整库备份 / 恢复：文档只在本机 localStorage，清浏览器数据就全丢 */
+    $('#btnBackup').addEventListener('click', () => {
+      try {
+        const data = Store.exportAll();
+        const json = JSON.stringify(data);
+        const d = new Date();
+        const stamp = d.getFullYear() + '-' +
+          String(d.getMonth() + 1).padStart(2, '0') + '-' +
+          String(d.getDate()).padStart(2, '0');
+        FW.downloadText('ForFree备份_' + stamp + '.json', json, 'application/json');
+        FW.toast('已导出 ' + data.docs.length + ' 篇文档、回收站 ' + data.trash.length +
+          ' 项、历史版本 ' + Object.keys(data.versions).length + ' 组（' + FW.fmtSize(json.length * 2) + '）', 5000);
+      } catch (e) {
+        FW.toast('备份失败：' + (e && e.message ? e.message : e), 4200);
+      }
+    });
+
+    $('#btnRestore').addEventListener('click', async () => {
+      const f = await FW.pickFile('.json,application/json');
+      if (!f) return;
+      let obj = null;
+      try {
+        const text = (await FW.readAsText(f)).replace(/^\uFEFF/, '');
+        obj = JSON.parse(text);
+      } catch (e) {
+        FW.toast('这个文件不是合法的 JSON：' + (e && e.message ? e.message : e), 4500);
+        return;
+      }
+      if (!obj || obj.kind !== 'backup' || obj.app !== 'forfree') {
+        FW.toast('这不是 ForFree 的备份文件', 4200);
+        return;
+      }
+      const ok = await FW.confirm(
+        '备份里有 ' + obj.docs.length + ' 篇文档（导出于 ' + FW.fmtTime(obj.exportedAt) + '）。\n\n' +
+        '会按「合并」方式导入：同 ID 的文档保留较新的那一份，现有文档不会被删除。',
+        { title: '从备份恢复', okText: '合并导入' });
+      if (!ok) return;
+      const r = Store.importAll(obj, 'merge');
+      if (!r.ok) { FW.toast('恢复失败：' + r.error, 5000); return; }
+      renderRecent($('#homeSearch').value.trim());
+      updateStorageInfo();
+      if (global.TRASH && global.TRASH.updateBadge) global.TRASH.updateBadge();
+      FW.toast('已导入：新增 ' + r.added + ' 篇，现在共 ' + r.total + ' 篇文档', 4500);
+    });
     $('#btnAppFolder').addEventListener('click', async () => {
       if (!(global.forfree && global.forfree.openAppFolder)) return;
       const r = await global.forfree.openAppFolder();
@@ -667,10 +734,25 @@
 
     window.addEventListener('beforeunload', (e) => {
       if (dirty) { save(true); }
+      // PDF 的编辑只存在于内存里，关窗口同样会丢。
+      // 注意：Electron 里光靠 returnValue 只会让窗口关不掉、且不给任何提示，
+      // 必须在主进程配 will-prevent-unload 弹原生对话框（见 desktop/main.js）。
+      if (currentType === 'pdf' && FW.Editors.pdf.hasUnsavedWork && FW.Editors.pdf.hasUnsavedWork()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
     });
   }
 
-  function goHome() {
+  async function goHome() {
+    // PDF 是会话式的：编辑结果不进文档库。原来这里对 pdf 直接跳过保存，
+    // 点「返回首页」等于把批注 / 页面调整 / 文字修改全部静默丢弃。
+    if (currentType === 'pdf' && FW.Editors.pdf.hasUnsavedWork && FW.Editors.pdf.hasUnsavedWork()) {
+      const leave = await FW.confirm(
+        '当前 PDF 的编辑（批注、页面调整、文字修改）不会保存到文档库，返回首页后会丢失。\n\n要保留的话请先点「导出」把 PDF 存下来。',
+        { title: 'PDF 编辑尚未导出', okText: '放弃编辑并返回', cancelText: '返回继续编辑' });
+      if (!leave) return;
+    }
     if (currentType && FW.Editors[currentType] && FW.Editors[currentType].unmount) {
       try { FW.Editors[currentType].unmount(); } catch (e) {}
     }
@@ -837,6 +919,7 @@
     global.TRASH.updateBadge();
   };
   app.refreshStatus = refreshStatus;
+  app.refreshSaveState = refreshSaveState;
   app.restoreLastDoc = restoreLastDoc;
   app.openInNewWindow = openInNewWindow;
 })(window);
