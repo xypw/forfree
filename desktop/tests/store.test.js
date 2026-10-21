@@ -175,3 +175,36 @@ test('存储用量：usage 返回各分项数字', () => {
   const u = Store.usage();
   ok(typeof u === 'number' && u > 0, 'usage 应返回总字节数，实际：' + u);
 });
+
+test('最近打开：touchOpen 只写 openedAt，不动 updated', () => {
+  const { window } = get();
+  const { Store, createDoc } = window.FW;
+  const d = createDoc('doc');
+  d.updated = 1000;
+  Store.upsert(d);
+  const before = Store.get(d.id).updated;
+  ok(Store.touchOpen(d.id), 'touchOpen 应返回 true');
+  const after = Store.get(d.id);
+  eq(after.updated, before, 'touchOpen 把「修改时间」也改了 —— 打开 ≠ 修改');
+  ok(after.openedAt > 0, 'openedAt 没写进去');
+});
+
+test('最近打开：listRecent 按 openedAt 排序，没有则退回 updated', () => {
+  const { window } = get();
+  const { Store, createDoc } = window.FW;
+  const a = createDoc('doc'); a.title = 'A'; Store.upsert(a);
+  const b = createDoc('doc'); b.title = 'B'; Store.upsert(b);
+  const c = createDoc('doc'); c.title = 'C'; Store.upsert(c);
+
+  // 直接改底层存储，精确控制时间
+  const raw = JSON.parse(window.localStorage.getItem('forfree.docs.v1'));
+  const set = (id, patch) => { Object.assign(raw.find((x) => x.id === id), patch); };
+  set(a.id, { openedAt: 3000, updated: 100 });
+  set(b.id, { openedAt: 1000, updated: 900 });
+  set(c.id, { updated: 2000 });            // 没有 openedAt，用 updated 兜底
+  window.localStorage.setItem('forfree.docs.v1', JSON.stringify(raw));
+  Store._cache = null;
+
+  // 跨 realm 的数组也不能 deepStrictEqual，转成字符串比
+  eq(Store.listRecent().map((x) => x.title).join(','), 'A,C,B');
+});

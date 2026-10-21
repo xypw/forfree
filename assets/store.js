@@ -274,6 +274,29 @@
       return this._read().slice().sort((a, b) => b.updated - a.updated);
     },
 
+    /* 按「最近打开」排序（从没打开过的用修改时间兜底）。
+       为什么单独存 openedAt：upsert 会把 updated 刷成现在，如果打开也走 upsert，
+       「修改于」和历史版本的节流判断就全乱了 —— 打开 ≠ 修改。 */
+    listRecent() {
+      return this._read().slice().sort((a, b) =>
+        (b.openedAt || b.updated || 0) - (a.openedAt || a.updated || 0));
+    },
+
+    /* 只更新最近打开时间。写失败静默忽略 —— 记不住"什么时候打开的"不该打扰用户 */
+    touchOpen(id) {
+      const arr = this._read().slice();
+      const i = arr.findIndex((d) => d.id === id);
+      if (i < 0) return false;
+      arr[i] = Object.assign({}, arr[i], { openedAt: Date.now() });
+      try {
+        localStorage.setItem(KEY, JSON.stringify(arr));
+        this._cache = arr;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
     get(id) {
       return this._read().find((d) => d.id === id) || null;
     },

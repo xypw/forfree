@@ -60,33 +60,93 @@
       '<div class="tpl-meta"><strong>' + FW.escapeHtml(t.name) + '</strong><span>' + t.desc + '</span></div></button>').join('');
   }
 
+  /* ---------------- 最近打开 ---------------- */
+  const RECENT_FILTERS = [
+    { k: 'all', label: '全部' },
+    { k: 'doc', label: '文字' },
+    { k: 'sheet', label: '表格' },
+    { k: 'slide', label: '演示' }
+  ];
+  let recentType = 'all';
+
+  /* 按自然日分组（今天 / 昨天 / 本周内 / 30 天内 / 更早）。
+     用自然日的 0 点算，不是「24 小时前」—— 凌晨看的文档早上还在「今天」里才对。 */
+  function recentGroupOf(ts) {
+    const now = new Date();
+    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const t = ts || 0;
+    if (t >= today0) return '今天';
+    if (t >= today0 - 864e5) return '昨天';
+    if (t >= today0 - 6 * 864e5) return '本周内';
+    if (t >= today0 - 29 * 864e5) return '30 天内';
+    return '更早';
+  }
+
+  function renderRecentFilter(all) {
+    const box = $('#recentFilter');
+    if (!box) return;
+    const countOf = (k) => (k === 'all' ? all.length : all.filter((d) => d.type === k).length);
+    box.innerHTML = RECENT_FILTERS.map((f) => {
+      const c = countOf(f.k);
+      return '<button class="recent-tab' + (recentType === f.k ? ' on' : '') + '" data-rt="' + f.k + '"' +
+        (c ? '' : ' disabled') + '>' + f.label + (c ? '<em>' + c + '</em>' : '') + '</button>';
+    }).join('');
+  }
+
+  function recentItemHtml(d) {
+    const m = FW.TYPE_META[d.type] || { name: '文档', icon: '?', color: '#8D949E' };
+    // 列表按「打开时间」排，所以这里也显示打开时间；修改时间放到 title 里
+    const when = d.openedAt ? '打开于 ' + FW.fmtTime(d.openedAt) : '修改于 ' + FW.fmtTime(d.updated);
+    return '<div class="recent-item" data-id="' + d.id + '" title="最后修改：' + FW.fmtTime(d.updated) + '">' +
+      '<div class="ri-icon" style="background:' + m.color + '">' + m.icon + '</div>' +
+      '<div class="ri-main"><strong>' + FW.escapeHtml(d.title || '未命名') + '</strong>' +
+      '<span>' + m.name + ' · ' + when + '</span></div>' +
+      '<div class="ri-actions">' +
+      '<button class="mini-btn" data-act="open">打开</button>' +
+      '<button class="mini-btn" data-act="newwin">新窗口</button>' +
+      '<button class="mini-btn" data-act="share">发给朋友</button>' +
+      '<button class="mini-btn" data-act="history">版本' +
+      (Store.versionCount(d.id) ? ' ' + Store.versionCount(d.id) : '') + '</button>' +
+      '<button class="mini-btn" data-act="diff">对比</button>' +
+      '<button class="mini-btn" data-act="copy">复制</button>' +
+      '<button class="mini-btn" data-act="rename">重命名</button>' +
+      '<button class="mini-btn danger" data-act="del">删除</button>' +
+      '</div></div>';
+  }
+
   function renderRecent(filter) {
-    const all = Store.list();
-    const list = filter ? all.filter((d) => (d.title || '').toLowerCase().indexOf(filter.toLowerCase()) >= 0) : all;
-    const box = $('#recentList');
+    const all = Store.listRecent();
+    const kw = String(filter || '').trim().toLowerCase();
+    let list = all;
+    if (recentType !== 'all') list = list.filter((d) => d.type === recentType);
+    if (kw) list = list.filter((d) => (d.title || '').toLowerCase().indexOf(kw) >= 0);
+
     $('#recentCount').textContent = all.length ? '共 ' + all.length + ' 个文档' : '';
+    renderRecentFilter(all);
+
+    const box = $('#recentList');
     if (!list.length) {
-      box.innerHTML = '<div class="empty">' + (filter ? '没有找到匹配的文档' : '还没有文档，点击上方「新建」或「模板」开始吧') + '</div>';
+      box.innerHTML = '<div class="empty">' + ((kw || recentType !== 'all')
+        ? '没有匹配的文档'
+        : '还没有文档，点击上方「新建」或「模板」开始吧') + '</div>';
       return;
     }
-    box.innerHTML = list.slice(0, 40).map((d) => {
-      const m = FW.TYPE_META[d.type] || { name: '文档', icon: '?', color: '#8D949E' };
-      return '<div class="recent-item" data-id="' + d.id + '">' +
-        '<div class="ri-icon" style="background:' + m.color + '">' + m.icon + '</div>' +
-        '<div class="ri-main"><strong>' + FW.escapeHtml(d.title || '未命名') + '</strong>' +
-        '<span>' + m.name + ' · 修改于 ' + FW.fmtTime(d.updated) + '</span></div>' +
-        '<div class="ri-actions">' +
-        '<button class="mini-btn" data-act="open">打开</button>' +
-        '<button class="mini-btn" data-act="newwin">新窗口</button>' +
-        '<button class="mini-btn" data-act="share">发给朋友</button>' +
-        '<button class="mini-btn" data-act="history">版本' +
-        (Store.versionCount(d.id) ? ' ' + Store.versionCount(d.id) : '') + '</button>' +
-        '<button class="mini-btn" data-act="diff">对比</button>' +
-        '<button class="mini-btn" data-act="copy">复制</button>' +
-        '<button class="mini-btn" data-act="rename">重命名</button>' +
-        '<button class="mini-btn danger" data-act="del">删除</button>' +
-        '</div></div>';
-    }).join('');
+
+    // 分组。listRecent 已经按时间从新到旧排好，所以组天然也是这个顺序
+    const groups = [];
+    let cur = null;
+    list.slice(0, 60).forEach((d) => {
+      const g = recentGroupOf(d.openedAt || d.updated);
+      if (!cur || cur.name !== g) { cur = { name: g, items: [] }; groups.push(cur); }
+      cur.items.push(d);
+    });
+
+    box.innerHTML = groups.map((g) =>
+      '<div class="recent-group">' +
+        '<div class="rg-head">' + g.name + '<em>' + g.items.length + '</em></div>' +
+        g.items.map(recentItemHtml).join('') +
+      '</div>'
+    ).join('');
   }
 
   function updateStorageInfo() {
@@ -215,6 +275,9 @@
     setSaveState(true);
     dirty = false;
     refreshStatus();
+
+    // 记一笔「最近打开」——首页的最近列表按这个排序，与修改时间分开记
+    Store.touchOpen(doc.id);
 
     // 记住最后打开的文档，下次启动直接进来。
     // 带上窗口标识：多窗口时，A 窗口开着文档、B 窗口回首页，
@@ -567,6 +630,13 @@
       const c = e.target.closest('.tpl-card');
       if (c) useTemplate(c.dataset.tpl);
     });
+    $('#recentFilter').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-rt]');
+      if (!b || b.disabled) return;
+      recentType = b.dataset.rt;
+      renderRecent($('#homeSearch').value.trim());
+    });
+
     $('#recentList').addEventListener('click', async (e) => {
       const item = e.target.closest('.recent-item');
       const btn = e.target.closest('button');

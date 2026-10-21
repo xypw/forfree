@@ -96,7 +96,25 @@ button{cursor:pointer;border:none;background:none}
 .tpl-meta strong{display:block;font-size:12.5px}
 .tpl-meta span{font-size:11px;color:var(--muted)}
 
-.recent-list{display:flex;flex-direction:column;gap:8px}
+.recent-filter{display:flex;gap:7px;margin-bottom:13px;flex-wrap:wrap}
+.recent-tab{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:5px 13px;border-radius:15px;border:1px solid var(--border-2);background:#fff;
+  font-size:12.5px;color:var(--text-2);transition:.15s;
+}
+.recent-tab em{font-style:normal;font-size:11px;opacity:.6}
+.recent-tab:hover:not(:disabled){border-color:#B9C0C9;color:var(--text)}
+.recent-tab.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+.recent-tab.on em{opacity:.85}
+.recent-tab:disabled{opacity:.4;cursor:default}
+
+.recent-list{display:flex;flex-direction:column;gap:18px}
+.recent-group{display:flex;flex-direction:column;gap:8px}
+.rg-head{
+  display:flex;align-items:center;gap:7px;padding:0 2px 1px;
+  font-size:12px;font-weight:600;color:var(--text-2);
+}
+.rg-head em{font-style:normal;font-weight:400;font-size:11px;color:var(--muted)}
 .recent-item{
   display:flex;align-items:center;gap:13px;padding:11px 15px;background:#fff;
   border:1px solid var(--border);border-radius:8px;transition:.15s;

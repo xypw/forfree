@@ -1106,6 +1106,38 @@ async function runSelfTest() {
     })()`);
     console.log('  整库备份：' + backupInfo);
 
+    // 首页「最近打开」：按打开时间排序 + 时间分组 + 类型筛选
+    const recentInfo = await js(`(function(){
+      FW.app.showView('home');
+      function snap(){
+        var groups = [];
+        document.querySelectorAll('#recentList .rg-head').forEach(function(h){ groups.push(h.textContent); });
+        var tabs = [];
+        document.querySelectorAll('#recentFilter .recent-tab').forEach(function(b){
+          tabs.push(b.textContent + (b.disabled ? '(空)' : ''));
+        });
+        return { groups: groups, tabs: tabs,
+          items: document.querySelectorAll('#recentList .recent-item').length };
+      }
+      var sec = document.querySelector('#recentList') && document.querySelector('#recentList').closest('.home-section');
+      var head = sec && sec.querySelector('.sec-head');
+      if (head) head.scrollIntoView({ block: 'center' });   // 顶部栏是 sticky，用 start 会被挡住
+      var all = snap();
+
+      // 切到「文字」筛选，条数应该变少；再切回「全部」应复原
+      var docTab = document.querySelector('#recentFilter .recent-tab[data-rt="doc"]');
+      if (docTab && !docTab.disabled) docTab.click();
+      var onlyDoc = snap();
+      var allTab = document.querySelector('#recentFilter .recent-tab[data-rt="all"]');
+      if (allTab) allTab.click();
+      var back = snap();
+
+      return JSON.stringify({ all: all, onlyDoc: onlyDoc, backToAll: back });
+    })()`);
+    console.log('  最近打开：' + recentInfo);
+    await new Promise((r) => setTimeout(r, 400));
+    await shoot('17-最近打开');
+
     console.log('  结论：自检通过');
     console.log('==============================\n');
   } catch (e) {
