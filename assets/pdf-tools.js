@@ -101,6 +101,11 @@
    * @returns [{name, type, page, rect, options, value, readOnly, multiline, maxLength, field}]
    *          rect 是 PDF 用户空间坐标 {x, y, width, height}（y 为矩形下边）
    */
+  /* 读取表单字段。
+     注意：下面那些 try { … } catch (e) {} **是故意静默的** —— 这里面对的是任意
+     第三方 PDF，字段字典经常不规范（缺 /DA、选项不是数组、Widget 没有 /Rect 等）。
+     逐项降级读取比整份表单读取失败要好得多，所以不要在这里加日志，否则
+     打开一个畸形 PDF 会在控制台刷出几十条噪音。 */
   function readFields(libDoc) {
     let form = null;
     try { form = libDoc.getForm(); } catch (e) { return []; }

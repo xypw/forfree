@@ -701,8 +701,41 @@
       const s = String(v == null ? '' : v);
       return /[\t\n"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     }).join('\t')).join('\n');
-    try { navigator.clipboard && navigator.clipboard.writeText(tsv); } catch (e) {}
-    FW.toast(cut ? '已剪切 ' + grid.length + ' 行 × ' + (grid[0] ? grid[0].length : 0) + ' 列' : '已复制到剪贴板');
+    // 原来这里是 try { writeText(tsv) } catch {} 然后无条件提示「已复制」——
+    // 但 writeText 返回 Promise，拒绝时 try/catch 根本抓不到（未处理的 rejection），
+    // 权限被拒也照样显示成功。现在改成等结果，失败就明说，并退回 execCommand。
+    const okMsg = cut
+      ? '已剪切 ' + grid.length + ' 行 × ' + (grid[0] ? grid[0].length : 0) + ' 列'
+      : '已复制到剪贴板';
+    copyText(tsv).then((ok) => {
+      if (ok) FW.toast(okMsg);
+      else FW.toast('复制失败：浏览器拒绝了剪贴板权限（可改用 Ctrl+C）', 4200);
+    });
+  }
+
+  /* 复制文本到剪贴板：优先 Clipboard API，失败退回隐藏 textarea + execCommand。
+     返回 Promise<boolean>，调用方据此决定提示成功还是失败。 */
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => legacyCopy(text));
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+
+  function legacyCopy(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return !!ok;
+    } catch (e) {
+      console.warn('[表格] 兜底复制也失败了', e);
+      return false;
+    }
   }
 
   function pasteGrid(grid, text) {

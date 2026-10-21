@@ -191,7 +191,7 @@
      ============================================================ */
   function openDoc(doc) {
     if (currentType && FW.Editors[currentType] && FW.Editors[currentType].unmount) {
-      try { FW.Editors[currentType].unmount(); } catch (e) {}
+      try { FW.Editors[currentType].unmount(); } catch (e) { console.warn('[编辑器] 卸载失败，可能残留状态', e); }
     }
     currentDoc = doc;
     currentType = doc.type;
@@ -309,7 +309,16 @@
     if (!currentDoc) return;
     const ed = FW.Editors[currentType];
     if (ed && ed.getData) {
-      try { currentDoc.data = ed.getData(); } catch (e) {}
+      try {
+        currentDoc.data = ed.getData();
+      } catch (e) {
+        // 取不到最新内容就**千万别写库** —— 否则会把旧内容当成"已保存"覆盖掉，
+        // 用户看到「已保存」继续编辑，一刷新就回到上一个版本。
+        console.warn('[保存] 从编辑器取内容失败，本次不保存', e);
+        dirty = true;
+        setSaveState(false);
+        return;
+      }
     }
     currentDoc.title = $('#docTitle').value.trim() || '未命名';
     // 写失败（本地存储满）时不要谎报「已保存」，也不要再存历史版本占地方
@@ -320,7 +329,7 @@
       return;
     }
     // 自动留存历史版本（内部有 3 分钟节流 + 内容去重）
-    try { global.HISTORY.autoSnapshot(currentDoc); } catch (e) {}
+    try { global.HISTORY.autoSnapshot(currentDoc); } catch (e) { console.warn('[历史版本] 自动快照失败', e); }
     dirty = false;
     setSaveState(true);
     updateStorageInfo();
@@ -724,10 +733,15 @@
       if (e.key === 'Escape') {
         $$('.modal-mask.on').forEach((m) => m.classList.remove('on'));
       }
-      if (ctrl && (e.key === 'z' || e.key === 'y')) {
+      if (ctrl && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y')) {
         if (currentType === 'sheet' || currentType === 'slide' || currentType === 'pdf') {
           const ed = FW.Editors[currentType];
-          if (ed) { e.preventDefault(); e.key === 'z' ? ed.undo() : ed.redo(); }
+          if (ed) {
+            e.preventDefault();
+            // Ctrl+Shift+Z 也按重做处理（很多人的习惯）
+            const isRedo = e.key === 'y' || e.key === 'Y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z'));
+            if (isRedo) ed.redo(); else ed.undo();
+          }
         }
       }
     });
@@ -754,7 +768,7 @@
       if (!leave) return;
     }
     if (currentType && FW.Editors[currentType] && FW.Editors[currentType].unmount) {
-      try { FW.Editors[currentType].unmount(); } catch (e) {}
+      try { FW.Editors[currentType].unmount(); } catch (e) { console.warn('[编辑器] 卸载失败，可能残留状态', e); }
     }
     if (dirty && currentType !== 'pdf') save(true);
     currentType = null; currentDoc = null;

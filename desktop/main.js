@@ -259,6 +259,60 @@ async function runSelfTest() {
     await new Promise((r) => setTimeout(r, 700));
     await shoot('04-演示文稿');
 
+    // 演示文稿撤销 / 重做（原来 undo/redo 只弹「暂不支持」）
+    const slideUndo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      function shapes(){ return FW.Editors.slide.getData().slides[0].shapes; }
+      function slideCount(){ return FW.Editors.slide.getData().slides.length; }
+
+      var n0 = shapes().length;
+      FW.Editors.slide.cmd('addText');
+      var n1 = shapes().length;
+      FW.Editors.slide.undo();
+      var n2 = shapes().length;
+      FW.Editors.slide.redo();
+      var n3 = shapes().length;
+
+      // 撤到底不该报错，也不该把内容撤没
+      FW.Editors.slide.undo(); FW.Editors.slide.undo(); FW.Editors.slide.undo();
+      var n4 = shapes().length;
+
+      // 整页操作
+      var s0 = slideCount();
+      FW.Editors.slide.cmd('newSlide');
+      var s1 = slideCount();
+      FW.Editors.slide.undo();
+      var s2 = slideCount();
+
+      // 拖动形状也要能撤销
+      FW.Editors.slide.cmd('addText');
+      await sleep(120);
+      var cv = document.querySelector('#slideCanvas');
+      var el = cv.querySelector('.shape');
+      if (!el) return JSON.stringify({ error: 'no shape' });
+      var sid = el.dataset.id;
+      var r = el.getBoundingClientRect();
+      var mk = function(t, x, y){ return new MouseEvent(t, { bubbles:true, cancelable:true, clientX:x, clientY:y, view:window }); };
+      function shapeX(){
+        var a = FW.Editors.slide.getData().slides[0].shapes.filter(function(o){ return o.id === sid; });
+        return a.length ? a[0].x : null;
+      }
+      var x0 = shapeX();
+      el.dispatchEvent(mk('mousedown', r.left + 5, r.top + 5));
+      window.dispatchEvent(mk('mousemove', r.left + 95, r.top + 55));
+      window.dispatchEvent(mk('mouseup', r.left + 95, r.top + 55));
+      var x1 = shapeX();
+      FW.Editors.slide.undo();
+      var x2 = shapeX();
+
+      return JSON.stringify({
+        shapesBefore: n0, afterAdd: n1, afterUndo: n2, afterRedo: n3, afterUndoAll: n4,
+        slidesBefore: s0, afterNewSlide: s1, afterUndoNewSlide: s2,
+        dragX: { before: x0, afterDrag: x1, afterUndo: x2 }
+      });
+    })()`);
+    console.log('  演示撤销：' + slideUndo);
+
     // PDF 工作台（用内置示例文件）
     await js(`(function(){
       var x=new XMLHttpRequest(); x.open('GET','samples/sample.pdf',false);

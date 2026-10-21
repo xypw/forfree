@@ -12,6 +12,45 @@
   const stage = () => $('#slideStage');
   const canvas = () => $('#slideCanvas');
 
+  /* ---------------- 撤销 / 重做 ----------------
+     快照式：改动前把当前数据拷一份压栈（和表格那边同一套思路）。
+     形状都是扁平对象（x/y/w/h/text/color/fill/src…全是原始值或字符串），
+     所以逐层浅拷就等价于深拷；而 src（图片 dataURL）这类大字符串可以共享引用，
+     不会因为存快照把内存翻倍。 */
+  let undoStack = [], redoStack = [];
+  const UNDO_MAX = 60;
+
+  function snap() {
+    return {
+      cur: cur,
+      data: {
+        size: Object.assign({}, doc.data.size),
+        theme: doc.data.theme,
+        slides: (doc.data.slides || []).map((sl) => ({
+          layout: sl.layout,
+          bg: sl.bg,
+          transition: sl.transition,
+          shapes: (sl.shapes || []).map((sh) => Object.assign({}, sh))
+        }))
+      }
+    };
+  }
+
+  function pushSnap(s) {
+    undoStack.push(s);
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+    redoStack.length = 0;
+  }
+  function pushUndo() { if (doc) pushSnap(snap()); }
+
+  function applySnap(s) {
+    doc.data = s.data;
+    cur = Math.max(0, Math.min(s.cur || 0, doc.data.slides.length - 1));
+    selShape = null;
+    renderCanvas();
+    emit();
+  }
+
   const THEMES = {
     fresh: { name: '清新白', bg: '#FFFFFF', title: '#1F2328', sub: '#6B7280', accent: '#2B7FE0' },
     blue: { name: '商务蓝', bg: '#0F2C52', title: '#FFFFFF', sub: '#A9C4E4', accent: '#4FA3FF' },
@@ -156,7 +195,7 @@
       if (handle) {
         const sh = slide().shapes.find((s) => s.id === selShape);
         if (!sh) return;
-        drag = { mode: 'resize', dir: handle.dataset.dir, sx: e.clientX, sy: e.clientY, o: Object.assign({}, sh), id: sh.id };
+        drag = { mode: 'resize', dir: handle.dataset.dir, sx: e.clientX, sy: e.clientY, o: Object.assign({}, sh), id: sh.id, snap: snap() };
         e.preventDefault(); return;
       }
       if (!el) { selShape = null; renderCanvas(); return; }
@@ -164,7 +203,7 @@
       selShape = id;
       const sh = slide().shapes.find((s) => s.id === id);
       if (el.getAttribute('contenteditable') === 'true') { return; }
-      drag = { mode: 'move', sx: e.clientX, sy: e.clientY, o: Object.assign({}, sh), id: id, moved: false };
+      drag = { mode: 'move', sx: e.clientX, sy: e.clientY, o: Object.assign({}, sh), id: id, moved: false, snap: snap() };
       renderCanvas();
     });
 
@@ -194,7 +233,8 @@
     });
 
     window.addEventListener('mouseup', () => {
-      if (drag && drag.moved) emit();
+      // 拖动/缩放：只有在真的动过之后才压栈（拖起来又放回原处不该产生撤销点）
+      if (drag && drag.moved) { pushSnap(drag.snap); emit(); }
       drag = null;
     });
 
@@ -205,7 +245,7 @@
       if (!sh) return;
       if (sh.type !== 'text') {
         const t = await FW.prompt('输入形状上的文字：', sh.text || '', { title: '形状文字', multiline: true, rows: 2 });
-        if (t != null) { sh.text = t; sh.type = 'text'; renderCanvas(); emit(); }
+        if (t != null) { pushUndo(); sh.text = t; sh.type = 'text'; renderCanvas(); emit(); }
         return;
       }
       selShape = sh.id;
@@ -215,9 +255,12 @@
       el.focus();
       const r = document.createRange(); r.selectNodeContents(el);
       const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      const before = snap();   // 进编辑态前先存一份，退出时只有真改过才压栈
       const save = () => {
         el.removeAttribute('contenteditable');
-        sh.text = el.innerText.replace(/\u00a0/g, ' ');
+        const txt = el.innerText.replace(/\u00a0/g, ' ');
+        if (txt !== sh.text) pushSnap(before);
+        sh.text = txt;
         renderCanvas(); emit();
       };
       el.addEventListener('blur', save, { once: true });
@@ -257,13 +300,16 @@
     if (!selShape) return;
     const sh = slide().shapes.find((s) => s.id === selShape);
     if (!sh) return;
+    const isArrow = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) >= 0;
+    const isDel = e.key === 'Delete' || e.key === 'Backspace';
+    if (!isArrow && !isDel) return;
+    pushUndo();
+    if (isDel) { delShape(); e.preventDefault(); return; }
     const step = e.shiftKey ? 10 : 1;
     if (e.key === 'ArrowLeft') { sh.x -= step; }
     else if (e.key === 'ArrowRight') { sh.x += step; }
     else if (e.key === 'ArrowUp') { sh.y -= step; }
-    else if (e.key === 'ArrowDown') { sh.y += step; }
-    else if (e.key === 'Delete' || e.key === 'Backspace') { delShape(); e.preventDefault(); return; }
-    else return;
+    else { sh.y += step; }
     e.preventDefault(); renderCanvas(); emit();
   }
 
@@ -432,6 +478,7 @@
       }
       doc.data.size = doc.data.size || { w: 960, h: 540 };
       cur = 0; selShape = null; presenting = false;
+      undoStack = []; redoStack = [];
       renderCanvas();
       bindEvents();
     },
@@ -452,30 +499,35 @@
         const last = slides()[cur];
         const layout = last && last.layout === 'title' ? 'titleContent' : 'titleContent';
         const lay = LAYOUTS.find((l) => l.id === layout);
+        pushUndo();
         slides().splice(cur + 1, 0, { layout: layout, bg: null, shapes: lay.build(T).map((s) => Object.assign({ id: uid() }, s)) });
         cur++; selShape = null; renderCanvas(); emit(); return;
       }
       if (name === 'dupSlide') {
         const cp = JSON.parse(JSON.stringify(slide()));
         cp.shapes.forEach((s) => { s.id = uid(); s.x += 16; s.y += 16; });
+        pushUndo();
         slides().splice(cur + 1, 0, cp); cur++; selShape = null; renderCanvas(); emit(); return;
       }
       if (name === 'delSlide') {
         if (slides().length <= 1) { FW.toast('至少保留一页'); return; }
+        pushUndo();
         slides().splice(cur, 1); cur = Math.max(0, cur - 1); selShape = null; renderCanvas(); emit(); return;
       }
-      if (name === 'moveUp') { if (cur > 0) { const s = slides().splice(cur, 1)[0]; slides().splice(cur - 1, 0, s); cur--; renderCanvas(); emit(); } return; }
-      if (name === 'moveDown') { if (cur < slides().length - 1) { const s = slides().splice(cur, 1)[0]; slides().splice(cur + 1, 0, s); cur++; renderCanvas(); emit(); } return; }
+      if (name === 'moveUp') { if (cur > 0) { pushUndo(); const s = slides().splice(cur, 1)[0]; slides().splice(cur - 1, 0, s); cur--; renderCanvas(); emit(); } return; }
+      if (name === 'moveDown') { if (cur < slides().length - 1) { pushUndo(); const s = slides().splice(cur, 1)[0]; slides().splice(cur + 1, 0, s); cur++; renderCanvas(); emit(); } return; }
 
       if (name.indexOf('layout:') === 0) {
         const lay = LAYOUTS.find((l) => l.id === name.slice(7));
         if (!lay) return;
         if (slide().shapes.length && !confirm('套用版式会替换当前页的内容，继续吗？')) return;
+        pushUndo();
         slide().layout = lay.id;
         slide().shapes = lay.build(T).map((s) => Object.assign({ id: uid() }, s));
         selShape = null; renderCanvas(); emit(); return;
       }
       if (name.indexOf('theme:') === 0) {
+        pushUndo();
         doc.data.theme = name.slice(6);
         const NT = theme();
         slides().forEach((sl) => {
@@ -488,11 +540,11 @@
         });
         renderCanvas(); emit(); FW.toast('已应用主题：' + NT.name); return;
       }
-      if (name.indexOf('trans:') === 0) { slide().transition = name.slice(6); emit(); FW.toast('已设置切换动画'); return; }
+      if (name.indexOf('trans:') === 0) { pushUndo(); slide().transition = name.slice(6); emit(); FW.toast('已设置切换动画'); return; }
       if (name === 'present:0') { startPresent(0); return; }
       if (name === 'present:here') { startPresent(cur); return; }
-      if (name === 'slideBg') { slide().bg = value; renderCanvas(); emit(); return; }
-      if (name === 'slideBg:reset') { slide().bg = null; renderCanvas(); emit(); return; }
+      if (name === 'slideBg') { pushUndo(); slide().bg = value; renderCanvas(); emit(); return; }
+      if (name === 'slideBg:reset') { pushUndo(); slide().bg = null; renderCanvas(); emit(); return; }
 
       /* 插入 */
       if (name === 'addText') return addShape({ type: 'text', x: W / 2 - 200, y: H / 2 - 40, w: 400, h: 80, text: '输入文字', size: 22, color: T.title, align: 'left', valign: 'middle' });
@@ -523,6 +575,10 @@
       const sh = selShape ? slide().shapes.find((s) => s.id === selShape) : null;
       const needShape = ['bold', 'italic', 'underline', 'color', 'fontSize', 'align:left', 'align:center', 'align:right', 'fill', 'line', 'dupShape', 'delShape', 'front', 'back', 'alignL', 'alignC', 'alignR', 'alignM', 'alignFull'];
       if (needShape.indexOf(name) >= 0 && !sh) { FW.toast('请先选中一个形状'); return; }
+      if (needShape.indexOf(name) < 0) return;   // 未知命令，直接忽略
+
+      // 走到这里的一定是会改数据的格式命令 —— 统一压一次栈
+      pushUndo();
 
       if (name === 'bold') { sh.bold = !sh.bold; }
       else if (name === 'italic') { sh.italic = !sh.italic; }
@@ -549,8 +605,18 @@
       renderCanvas(); emit();
     },
 
-    undo() { FW.toast('演示文稿暂不支持逐步撤销'); },
-    redo() { FW.toast('演示文稿暂不支持逐步重做'); },
+    undo() {
+      if (!undoStack.length) { FW.toast('没有可撤销的操作'); return; }
+      redoStack.push(snap());
+      applySnap(undoStack.pop());
+      FW.toast('已撤销');
+    },
+    redo() {
+      if (!redoStack.length) { FW.toast('没有可重做的操作'); return; }
+      undoStack.push(snap());
+      applySnap(redoStack.pop());
+      FW.toast('已重做');
+    },
 
     status() {
       const sl = slide();
@@ -571,6 +637,7 @@
   };
 
   function addShape(sh) {
+    pushUndo();
     sh.id = uid();
     sh._auto = false;
     slide().shapes.push(sh);
@@ -578,6 +645,8 @@
     renderCanvas(); emit();
   }
 
+  /* 注意：这里**不**自己 pushUndo —— 调用方（cmd 的格式分支链 / onKey 的 Delete）
+     已经压过栈了，否则一次删除要按两次撤销。 */
   function delShape() {
     if (!selShape) return;
     const arr = slide().shapes;

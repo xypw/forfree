@@ -22,7 +22,7 @@
   /* ---------- 命令 ---------- */
   function exec(cmd, val) {
     paper().focus();
-    try { document.execCommand(cmd, false, val === undefined ? null : val); } catch (e) {}
+    try { document.execCommand(cmd, false, val === undefined ? null : val); } catch (e) { console.warn('[文档] 执行命令失败：' + cmd, e); }
     emit();
   }
 
@@ -239,7 +239,7 @@
       if (name.indexOf('block:') === 0) {
         const tag = name.slice(6);
         p.focus();
-        try { document.execCommand('formatBlock', false, tag.toUpperCase()); } catch (e) {}
+        try { document.execCommand('formatBlock', false, tag.toUpperCase()); } catch (e) { console.warn('[文档] 设置段落样式失败：' + tag, e); }
         emit(); return;
       }
       if (name.indexOf('paper:') === 0) { applyPaper(name.slice(6)); emit(); return; }

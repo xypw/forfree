@@ -188,7 +188,7 @@
     // 从编辑器取最新内容
     const ed = FW.Editors[doc.type];
     if (ed && ed.getData && FW.app.currentDoc && FW.app.currentDoc() === doc) {
-      try { doc.data = ed.getData(); } catch (e) {}
+      try { doc.data = ed.getData(); } catch (e) { console.warn('[分享] 取最新内容失败，将使用上次保存的版本', e); FW.toast('取最新内容失败，分享的是上次保存的版本', 4200); }
     }
 
     const file = buildFile(doc);

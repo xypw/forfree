@@ -628,7 +628,9 @@
       p.thumb = cv.toDataURL('image/jpeg', 0.6);
       const host = $('#pdfThumbs').querySelector('.pdf-thumb[data-pi="' + i + '"] .pdf-thumb-box');
       if (host) host.innerHTML = '<img src="' + p.thumb + '">';
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[PDF] 第 ' + (i + 1) + ' 页缩略图生成失败', e);
+    }
   }
 
   /* ============================================================

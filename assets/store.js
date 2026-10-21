@@ -554,7 +554,10 @@
     },
     setSetting(k, v) {
       const s = this.settings(); s[k] = v;
-      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch (e) {}
+      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
+      // 设置写不进去通常是本地存储满了 —— 这时用户勾选的选项不会生效，
+      // 至少留一条线索，否则「明明勾了自动打开却没用」根本没法排查
+      catch (e) { console.warn('[设置] 写入失败（本地存储可能已满）：' + k, e); }
     }
   };
 
