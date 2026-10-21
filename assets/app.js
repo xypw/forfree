@@ -677,6 +677,8 @@
       const hasBridge = !!(global.forfree && global.forfree.isDesktop);
       const b = $('#btnAppFolder');
       if (b) b.style.display = hasBridge ? 'inline-block' : 'none';
+      const sc = $('#btnShortcut');
+      if (sc) sc.style.display = hasBridge ? 'inline-block' : 'none';
       const h = $('#appFolderHint');
       if (h) h.textContent = hasBridge ? '把整个文件夹拷给别人，对方双击 exe 就能用' : '';
       // AGPL 第 5 条要求分发物带有显著声明：桌面版内置 MuPDF（AGPL-3.0），
@@ -745,6 +747,15 @@
       const r = await global.forfree.openAppFolder();
       if (r && r.ok) FW.toast('已打开：' + r.path, 4000);
       else FW.toast('打开失败' + (r && r.error ? '：' + r.error : ''), 3600);
+    });
+    $('#btnShortcut').addEventListener('click', async () => {
+      if (!(global.forfree && global.forfree.createDesktopShortcut)) return;
+      const r = await global.forfree.createDesktopShortcut();
+      if (r && r.ok) {
+        FW.toast((r.updated ? '已更新桌面快捷方式' : '已在桌面创建快捷方式') + '：' + r.path, 5000);
+      } else {
+        FW.toast('创建失败' + (r && r.error ? '：' + r.error : ''), 5200);
+      }
     });
     $('#btnDiff').addEventListener('click', () => global.DIFF.open());
     $('#btnTrash').addEventListener('click', () => global.TRASH.open());

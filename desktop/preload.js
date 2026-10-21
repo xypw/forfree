@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('forfree', {
   /** 打开程序自己所在的文件夹（方便把 exe 拷给别人） */
   openAppFolder: () => ipcRenderer.invoke('ff:open-app-folder'),
 
+  /** 在桌面创建指向本程序的快捷方式（免安装版每次都要翻文件夹，很不方便） */
+  createDesktopShortcut: (opts) => ipcRenderer.invoke('ff:create-shortcut', opts || {}),
+
   /** 把内容写到一个临时文件，返回路径（供系统原生拖拽用） */
   prepareFile: (name, bytes) => ipcRenderer.invoke('ff:prepare-file', { name: name, bytes: bytes }),
 

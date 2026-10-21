@@ -1138,6 +1138,21 @@ async function runSelfTest() {
     await new Promise((r) => setTimeout(r, 400));
     await shoot('17-最近打开');
 
+    // 桌面快捷方式：关键是「指向用户双击的那个 exe」，而不是 portable 的临时解压目录
+    const shortcutInfo = await js(`(async function(){
+      if (!window.forfree || !window.forfree.createDesktopShortcut) return JSON.stringify({ error: 'no bridge' });
+      var r = await window.forfree.createDesktopShortcut({ dryRun: true });
+      var t = String(r.target || '');
+      var inTemp = /[\\\\/](Temp|tmp)[\\\\/]/i.test(t);
+      // portable 模式下指向临时目录 = 快捷方式迟早失效，必须当场失败
+      if (r.portable && inTemp) throw new Error('快捷方式指向了临时解压目录：' + t);
+      return JSON.stringify({
+        ok: r.ok, portable: !!r.portable, target: t, lnk: r.path,
+        isExe: /\\.exe$/i.test(t), inTemp: inTemp
+      });
+    })()`);
+    console.log('  桌面快捷方式：' + shortcutInfo);
+
     console.log('  结论：自检通过');
     console.log('==============================\n');
   } catch (e) {
@@ -1192,6 +1207,49 @@ function setupShareIpc() {
   });
 
   // 打开程序自己所在的文件夹 —— 方便把 exe 拷给别人
+  /* 免安装版（portable）会把自己解压到临时目录再运行，所以 process.execPath
+     指向的是 %TEMP% 里的那份副本。拿它做快捷方式，临时目录一被清理就失效了。
+     portable 启动器会把原始 exe 的路径放进 PORTABLE_EXECUTABLE_FILE / _DIR。 */
+  function realExePath() {
+    const f = process.env.PORTABLE_EXECUTABLE_FILE;
+    if (f && fs.existsSync(f)) return f;
+    const d = process.env.PORTABLE_EXECUTABLE_DIR;
+    if (d) {
+      const guess = path.join(d, path.basename(process.execPath));
+      if (fs.existsSync(guess)) return guess;
+    }
+    return process.execPath;
+  }
+
+  ipcMain.handle('ff:create-shortcut', async (evt, opts) => {
+    try {
+      if (!app.isPackaged) return { ok: false, error: '开发模式下不创建快捷方式' };
+      const exe = realExePath();
+      const desktop = app.getPath('desktop');
+      if (!desktop || !fs.existsSync(desktop)) return { ok: false, error: '找不到桌面目录' };
+      const lnk = path.join(desktop, 'ForFree.lnk');
+      // 自检用：只回报「会写到哪、指向哪」，不真的落盘，免得在桌面留垃圾
+      if (opts && opts.dryRun) {
+        return {
+          ok: true, path: lnk, target: exe, dryRun: true,
+          portable: !!process.env.PORTABLE_EXECUTABLE_FILE
+        };
+      }
+      const op = fs.existsSync(lnk) ? 'update' : 'create';
+      const done = shell.writeShortcutLink(lnk, op, {
+        target: exe,
+        cwd: path.dirname(exe),
+        icon: exe,          // exe 里已嵌图标（打包时 rcedit 写入），快捷方式直接复用
+        iconIndex: 0,
+        description: 'ForFree 免费办公套件 —— 离线可用的办公工具'
+      });
+      if (!done) return { ok: false, error: '系统拒绝了创建请求' };
+      return { ok: true, path: lnk, target: exe, updated: op === 'update' };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  });
+
   ipcMain.handle('ff:open-app-folder', async () => {
     // 免安装版会把自己解压到临时目录，process.execPath 指向那里；
     // 用户实际存放 exe 的目录在 PORTABLE_EXECUTABLE_DIR 里（由 portable 启动器设置）
