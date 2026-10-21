@@ -12,6 +12,12 @@
   let saveTimer = null;
   let ribbonTab = {};
 
+  /* 多标签：同一个窗口里开着多个文档，来回切不用回首页。
+     只装文档库里的文档（doc/sheet/slide）—— PDF 是会话式的，
+     没有文档 id，切走再切回来没法恢复，所以不放进标签栏。 */
+  let tabs = [];            // [{ id, title, type }]
+  let activeTabId = null;
+
   // 每个窗口一个标识，用来区分「这条记录是哪个窗口写的」（多窗口场景）
   const WINDOW_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -252,6 +258,80 @@
   /* ============================================================
      打开文档
      ============================================================ */
+  /* ---------------- 多标签 ---------------- */
+  function renderTabs() {
+    const bar = $('#tabBar');
+    if (!bar) return;
+    // PDF 会话没有文档 id、切走就回不来，所以不进标签栏；没有文档时整条隐藏
+    const show = !!currentType && currentType !== 'pdf' && tabs.length > 0;
+    bar.style.display = show ? '' : 'none';
+    if (!show) { bar.innerHTML = ''; return; }
+    bar.innerHTML = tabs.map((t) => {
+      const m = FW.TYPE_META[t.type] || { icon: '?', color: '#8D949E' };
+      const name = FW.escapeHtml(t.title || '未命名');
+      return '<div class="doc-tab' + (t.id === activeTabId ? ' on' : '') + '" data-tab="' + t.id + '" title="' + name + '">' +
+        '<span class="dt-ico" style="background:' + m.color + '">' + m.icon + '</span>' +
+        '<span class="dt-name">' + name + '</span>' +
+        '<button class="dt-close" data-close="' + t.id + '" title="关闭">×</button>' +
+        '</div>';
+    }).join('') +
+      '<button class="dt-new" id="tabNew" title="新建文字文档">+</button>' +
+      '<button class="dt-open" id="tabOpen" title="从磁盘打开文件">打开文件</button>';
+  }
+
+  /* 把当前改动落盘。返回是否成功 —— 失败时 dirty 仍为 true，
+     调用方据此决定要不要继续切标签（别在保存失败时把内容丢了）。 */
+  function flushSave() {
+    clearTimeout(saveTimer);
+    if (dirty) save(true);
+    return !dirty;
+  }
+
+  function switchTab(id) {
+    if (!id || id === activeTabId) return;
+    if (!flushSave()) { FW.toast('当前文档保存失败（本地存储可能已满），没有切换', 4600); return; }
+    const doc = Store.get(id);
+    if (!doc) { closeTab(id, true); return; }   // 文档已被删掉
+    openDoc(doc);
+  }
+
+  function closeTab(id, skipSave) {
+    const i = tabs.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    const wasActive = id === activeTabId;
+    if (wasActive && !skipSave && !flushSave()) {
+      FW.toast('保存失败，先不关闭这个标签', 4200);
+      return;
+    }
+    tabs.splice(i, 1);
+    if (!wasActive) { renderTabs(); return; }
+    activeTabId = null;
+    const next = tabs[Math.min(i, tabs.length - 1)];
+    if (next) {
+      const doc = Store.get(next.id);
+      if (doc) { openDoc(doc); return; }
+    }
+    goHome();
+  }
+
+  /* 文档被删除时把标签一起收掉 */
+  function dropTab(id) {
+    const i = tabs.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    if (id === activeTabId) closeTab(id, true);
+    else { tabs.splice(i, 1); renderTabs(); }
+  }
+
+  /* 改名 / 改类型后同步标签上的显示 */
+  function syncTabTitle(doc) {
+    const t = tabs.find((x) => x.id === doc.id);
+    if (!t) return;
+    if (t.title === doc.title && t.type === doc.type) return;
+    t.title = doc.title;
+    t.type = doc.type;
+    renderTabs();
+  }
+
   function openDoc(doc) {
     if (currentType && FW.Editors[currentType] && FW.Editors[currentType].unmount) {
       try { FW.Editors[currentType].unmount(); } catch (e) { console.warn('[编辑器] 卸载失败，可能残留状态', e); }
@@ -278,6 +358,13 @@
     setSaveState(true);
     dirty = false;
     refreshStatus();
+
+    // 登记到标签栏（已在里面就只更新标题/类型）
+    const t = tabs.find((x) => x.id === doc.id);
+    if (t) { t.title = doc.title; t.type = doc.type; }
+    else tabs.push({ id: doc.id, title: doc.title, type: doc.type });
+    activeTabId = doc.id;
+    renderTabs();
 
     // 记一笔「最近打开」——首页的最近列表按这个排序，与修改时间分开记
     Store.touchOpen(doc.id);
@@ -387,6 +474,7 @@
       }
     }
     currentDoc.title = $('#docTitle').value.trim() || '未命名';
+    syncTabTitle(currentDoc);   // 改名后标签上也要跟着变
     // 写失败（本地存储满）时不要谎报「已保存」，也不要再存历史版本占地方
     const ok = Store.upsert(currentDoc);
     if (!ok) {
@@ -653,10 +741,11 @@
       else if (act === 'copy') { const c = Store.duplicate(id); if (c) { FW.toast('已创建副本'); renderRecent($('#homeSearch').value.trim()); updateStorageInfo(); } }
       else if (act === 'rename') {
         const n = await FW.prompt('重命名：', d.title, { title: '重命名文档' });
-        if (n && n.trim()) { d.title = n.trim(); Store.upsert(d); renderRecent($('#homeSearch').value.trim()); if (currentDoc && currentDoc.id === id) $('#docTitle').value = d.title; }
+        if (n && n.trim()) { d.title = n.trim(); Store.upsert(d); syncTabTitle(d); renderRecent($('#homeSearch').value.trim()); if (currentDoc && currentDoc.id === id) $('#docTitle').value = d.title; }
       } else if (act === 'del') {
         if (await FW.confirm('确定删除「' + d.title + '」？\n文档会移到回收站，可以随时还原。', { title: '删除文档', okText: '移入回收站' })) {
           Store.trashDoc(id);
+          dropTab(id);
           renderRecent($('#homeSearch').value.trim());
           updateStorageInfo();
           global.TRASH.updateBadge();
@@ -675,6 +764,21 @@
     $('#homeSearch').addEventListener('input', () => renderRecent($('#homeSearch').value.trim()));
 
     $('#btnOpenFile').addEventListener('click', openAnyFile);
+
+    /* 标签栏：点切换、× 关闭、+ 新建、中键也能关 */
+    $('#tabBar').addEventListener('click', (e) => {
+      const closeBtn = e.target.closest('[data-close]');
+      if (closeBtn) { e.stopPropagation(); closeTab(closeBtn.dataset.close); return; }
+      if (e.target.closest('#tabNew')) { newDoc('doc'); return; }
+      if (e.target.closest('#tabOpen')) { openAnyFile(); return; }
+      const tab = e.target.closest('[data-tab]');
+      if (tab) switchTab(tab.dataset.tab);
+    });
+    $('#tabBar').addEventListener('auxclick', (e) => {
+      if (e.button !== 1) return;
+      const tab = e.target.closest('[data-tab]');
+      if (tab) { e.preventDefault(); closeTab(tab.dataset.tab); }
+    });
     $('#btnConvert').addEventListener('click', showConvert);
     $('#btnAbout').addEventListener('click', () => {
       const hasBridge = !!(global.forfree && global.forfree.isDesktop);
@@ -856,6 +960,7 @@
     }
     if (dirty && currentType !== 'pdf') save(true);
     currentType = null; currentDoc = null;
+    tabs = []; activeTabId = null; renderTabs();
     // 只有「是我这个窗口设的记录」才清 —— 否则多窗口下会误清别的窗口的记录
     try {
       const s = Store.settings();

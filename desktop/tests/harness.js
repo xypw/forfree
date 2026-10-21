@@ -92,12 +92,25 @@ function get() {
   return cached;
 }
 
-/* 清空本地存储，让每个测试从干净状态开始 */
+/* 清空本地存储，让每个测试从干净状态开始。
+   顺带点一下「返回首页」—— 否则上一个用例开着的文档和标签会带进下一个用例。 */
 function resetStorage(app) {
   const w = (app || get()).window;
+  const home = w.document.querySelector('#btnHome');
+  if (home) { try { home.click(); } catch (e) {} }
   w.localStorage.clear();
   const S = w.FW.Store;
   if (S) S._cache = null;
 }
 
-module.exports = { boot, get, resetStorage, ROOT };
+/* 等 init() 跑完（app.js 在 readyState==='loading' 时会挂到 DOMContentLoaded 上）。
+   需要 DOM 已经被初始化（模板卡片、最近列表等）的测试要 await 这个。 */
+function ready(app) {
+  const w = (app || get()).window;
+  return new Promise((resolve) => {
+    if (w.document.readyState !== 'loading') { resolve(); return; }
+    w.document.addEventListener('DOMContentLoaded', () => resolve(), { once: true });
+  });
+}
+
+module.exports = { boot, get, resetStorage, ready, ROOT };

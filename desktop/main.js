@@ -259,6 +259,38 @@ async function runSelfTest() {
     await new Promise((r) => setTimeout(r, 700));
     await shoot('04-演示文稿');
 
+    // 多标签：同一窗口里开多个文档，来回切不用回首页
+    const tabInfo = await js(`(async function(){
+      var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+      var d = document;
+      function names(){ return Array.prototype.map.call(d.querySelectorAll('.doc-tab .dt-name'), function(x){ return x.textContent; }); }
+      function active(){ var e = d.querySelector('.doc-tab.on .dt-name'); return e ? e.textContent : null; }
+
+      var before = names();
+      // 从首页最近列表打开另一篇（走真实点击路径）
+      var item = d.querySelector('#recentList .recent-item');
+      var openBtn = item && item.querySelector('[data-act="open"]');
+      if (!openBtn) return JSON.stringify({ error: '最近列表里没有可打开的文档', before: before });
+      openBtn.click();
+      await sleep(600);
+      var afterOpen = names();
+      var activeAfterOpen = active();
+
+      // 点回第一个标签
+      var tabs = d.querySelectorAll('.doc-tab');
+      if (tabs.length > 1) tabs[0].click();
+      await sleep(500);
+      var activeAfterSwitch = active();
+
+      return JSON.stringify({
+        before: before, afterOpen: afterOpen,
+        activeAfterOpen: activeAfterOpen, activeAfterSwitch: activeAfterSwitch,
+        barVisible: d.querySelector('#tabBar').style.display !== 'none'
+      });
+    })()`);
+    console.log('  多标签：' + tabInfo);
+    await shoot('04b-多标签');
+
     // 演示文稿撤销 / 重做（原来 undo/redo 只弹「暂不支持」）
     const slideUndo = await js(`(async function(){
       var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
