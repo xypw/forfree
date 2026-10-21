@@ -62,6 +62,43 @@
     return new DOMParser().parseFromString(text, 'application/xml');
   }
 
+  /* 老版 Office 格式（.doc / .xls / .ppt）是 OLE 复合文档，不是 ZIP。
+     直接丢给 unzip 会抛一句 fflate 的内部错误，用户完全看不懂自己在哪一步错了。
+     这里先验 ZIP 签名（"PK"），不对就给一句人话。 */
+  function assertOoxml(bytes, ext) {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (u8.length >= 4 && u8[0] === 0x50 && u8[1] === 0x4b) return;   // "PK"
+    throw new Error('这不是有效的 ' + ext + ' 文件。若你选的是老版格式（.doc / .xls / .ppt），' +
+      '本软件暂不支持 —— 请先用 WPS 或 Office 打开，另存为 ' + ext + ' 后再试。');
+  }
+
+  /* pptx 的图片关系 Target 形如 "../media/image1.png"，相对于 ppt/slides/ */
+  function resolveMediaPath(target) {
+    const parts = ('ppt/slides/' + String(target || '')).split('/');
+    const out = [];
+    for (const seg of parts) {
+      if (seg === '..') out.pop();
+      else if (seg !== '.' && seg !== '') out.push(seg);
+    }
+    return out.join('/');
+  }
+
+  function u8ToDataUrl(u8, name) {
+    const ext = String(name).split('.').pop().toLowerCase();
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+      : ext === 'gif' ? 'image/gif'
+        : ext === 'webp' ? 'image/webp'
+          : ext === 'bmp' ? 'image/bmp'
+            : ext === 'svg' ? 'image/svg+xml'
+              : 'image/png';
+    let bin = '';
+    const CH = 0x8000;   // 分块，避免 apply 参数过多爆栈
+    for (let i = 0; i < u8.length; i += CH) {
+      bin += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+    }
+    return 'data:' + mime + ';base64,' + btoa(bin);
+  }
+
   /* ============================================================
      一、DOCX 生成
      ============================================================ */
@@ -314,6 +351,7 @@
      二、DOCX 解析
      ============================================================ */
   function parseDocx(bytes) {
+    assertOoxml(bytes, '.docx');
     const files = unzip(bytes);
     const entry = files['word/document.xml'];
     if (!entry) throw new Error('不是有效的 .docx 文件（缺少 word/document.xml）');
@@ -593,6 +631,7 @@
      四、XLSX 解析
      ============================================================ */
   function parseXlsx(bytes) {
+    assertOoxml(bytes, '.xlsx');
     const files = unzip(bytes);
     const wbEntry = files['xl/workbook.xml'];
     if (!wbEntry) throw new Error('不是有效的 .xlsx 文件（缺少 xl/workbook.xml）');
@@ -998,6 +1037,7 @@
      六、PPTX 解析
      ============================================================ */
   function parsePptx(bytes) {
+    assertOoxml(bytes, '.pptx');
     const files = unzip(bytes);
     const pres = files['ppt/presentation.xml'];
     if (!pres) throw new Error('不是有效的 .pptx 文件（缺少 ppt/presentation.xml）');
@@ -1043,7 +1083,34 @@
         if (c) sl.bg = '#' + c.getAttribute('val');
       }
 
-      descend(dom, 'sp').forEach((sp, i) => {
+      // 这张幻灯片自己的关系表 —— 图片的 r:embed 要靠它映射到 ppt/media/xxx
+      const relPath = path.replace(/slides\//, 'slides/_rels/') + '.rels';
+      const relEntry = files[relPath];
+      const slideRels = {};
+      if (relEntry) {
+        descend(xmlDoc(dec(relEntry)), 'Relationship').forEach((r) => {
+          slideRels[r.getAttribute('Id')] = r.getAttribute('Target');
+        });
+      }
+
+      // 按 spTree 里的真实顺序收集 sp / pic，保证图层顺序。
+      // 原来是 descend(dom,'sp') —— pic 完全被跳过，导入带图的 PPT 会静默丢图。
+      const spTree = descend(dom, 'spTree')[0];
+      const nodes = [];
+      if (spTree) {
+        for (let i = 0; i < spTree.childNodes.length; i++) {
+          const n = spTree.childNodes[i];
+          if (n.nodeType !== 1) continue;
+          const ln = n.localName || n.nodeName;
+          if (ln === 'sp' || ln === 'pic') nodes.push(n);
+          else if (ln === 'grpSp') descend(n, 'sp').forEach((x) => nodes.push(x));
+        }
+      } else {
+        descend(dom, 'sp').forEach((x) => nodes.push(x));
+      }
+
+      nodes.forEach((sp, i) => {
+        const isPic = (sp.localName || sp.nodeName) === 'pic';
         const xfrm = descend(sp, 'xfrm')[0];
         let x = 60, y = 60 + i * 70, w = 400, h = 60;
         if (xfrm) {
@@ -1051,6 +1118,20 @@
           if (off) { x = Math.round(parseInt(off.getAttribute('x') || 0, 10) / EMU); y = Math.round(parseInt(off.getAttribute('y') || 0, 10) / EMU); }
           if (ext) { w = Math.round(parseInt(ext.getAttribute('cx') || 0, 10) / EMU); h = Math.round(parseInt(ext.getAttribute('cy') || 0, 10) / EMU); }
         }
+
+        // 图片：<p:pic><p:blipFill><a:blip r:embed="rIdN"/> → 从 rels 找到 media 文件
+        if (isPic) {
+          const blip = descend(sp, 'blip')[0];
+          const rid = blip ? (attr(blip, 'embed') || blip.getAttribute('r:embed')) : '';
+          const tgt = rid ? slideRels[rid] : '';
+          if (!tgt) return;                       // 找不到关系就跳过，别塞个空形状
+          const mediaPath = resolveMediaPath(tgt);
+          const bin = files[mediaPath];
+          if (!bin || !bin.length) return;
+          sl.shapes.push({ id: 'pic' + i, type: 'image', x: x, y: y, w: w, h: h, src: u8ToDataUrl(bin, mediaPath) });
+          return;
+        }
+
         const txBody = kids(sp, 'txBody')[0];
         let text = '', size = 18, bold = false, italic = false, color = '#1F2328', align = 'left';
         if (txBody) {

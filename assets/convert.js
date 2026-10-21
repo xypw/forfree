@@ -168,6 +168,30 @@
   /* ============================================================
      读取任意文件 → ForFree 文档对象
      ============================================================ */
+  /* 把超大的 dataURL 图片缩到 maxSide 以内并转 JPEG。
+     只在图片确实很大时才调用（阈值见 readAsDoc）。
+     任何一步失败都原样返回 —— 宁可多占点空间，也不能把导入搞挂。 */
+  function shrinkDataUrl(src, maxSide) {
+    return new Promise((resolve) => {
+      try {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+            const cv = document.createElement('canvas');
+            cv.width = Math.max(1, Math.round(img.width * scale));
+            cv.height = Math.max(1, Math.round(img.height * scale));
+            cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+            const out = cv.toDataURL('image/jpeg', 0.82);
+            resolve(out && out.length < src.length ? out : src);
+          } catch (e) { resolve(src); }
+        };
+        img.onerror = () => resolve(src);
+        img.src = src;
+      } catch (e) { resolve(src); }
+    });
+  }
+
   async function readAsDoc(file) {
     const kind = kindOf(file);
     const bytes = await FW.readAsArrayBuffer(file);
@@ -194,6 +218,18 @@
       d.title = baseName;
       d.data.size = r.size;
       d.data.slides = r.slides;
+      // 内嵌图片以 base64 进文档库，而 localStorage 只有 5–10MB ——
+      // 几张手机照片就能把配额撑爆，之后保存会直接失败。大图先压一道。
+      let shrunk = 0;
+      for (const sl of d.data.slides) {
+        for (const sh of sl.shapes || []) {
+          if (sh.type !== 'image' || !sh.src || sh.src.length < 1.2 * 1024 * 1024) continue;
+          const before = sh.src.length;
+          sh.src = await shrinkDataUrl(sh.src, 1600);
+          if (sh.src.length < before) shrunk++;
+        }
+      }
+      if (shrunk) FW.toast('已压缩 ' + shrunk + ' 张较大的图片，避免占满本地存储', 4200);
       return d;
     }
     if (kind === 'csv') {

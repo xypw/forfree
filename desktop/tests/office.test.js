@@ -168,3 +168,39 @@ test('docToText / markdownToHtml：文本导出不丢段落', () => {
   includes(html, '<h1', 'markdown 标题没转成 h1');
   includes(html, '<li>', 'markdown 列表没转成 li');
 });
+
+test('pptx：内嵌图片能读回来，且图层顺序不变', () => {
+  const { window } = get();
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const doc = {
+    id: 'x', type: 'slide', title: '带图', data: {
+      size: { w: 960, h: 540 }, theme: 'fresh',
+      slides: [{
+        layout: 'blank', shapes: [
+          { id: 't1', type: 'text', x: 60, y: 40, w: 400, h: 60, text: '标题', size: 32, color: '#222222' },
+          { id: 'i1', type: 'image', x: 60, y: 140, w: 200, h: 200, src: PNG }
+        ]
+      }]
+    }
+  };
+  const back = window.OFFICE.parsePptx(window.OFFICE.buildPptx(doc));
+  const shapes = back.slides[0].shapes;
+  eq(shapes.length, 2, '形状数不对 —— pic 可能又被跳过了');
+  eq(shapes[0].type, 'text', '图层顺序变了（文字应在前）');
+  const img = shapes.filter((s) => s.type === 'image')[0];
+  ok(img, '图片丢了');
+  ok(img.src && img.src.indexOf('data:image/') === 0, '图片没有还原成 dataURL');
+  eq(img.x, 60); eq(img.y, 140); eq(img.w, 200); eq(img.h, 200);
+});
+
+test('老版格式（.doc/.xls/.ppt）给出可读提示，而不是 ZIP 内部错误', () => {
+  const { window } = get();
+  // OLE 复合文档签名 —— 老版 Office 文件就是这种
+  const ole = new Uint8Array([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0]);
+  for (const [fn, ext] of [['parseDocx', '.docx'], ['parseXlsx', '.xlsx'], ['parsePptx', '.pptx']]) {
+    let msg = '';
+    try { window.OFFICE[fn](ole); } catch (e) { msg = e.message || ''; }
+    ok(msg.indexOf('另存为') >= 0, fn + ' 的提示不够友好：' + msg);
+    ok(msg.indexOf(ext) >= 0, fn + ' 的提示里没提 ' + ext);
+  }
+});
