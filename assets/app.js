@@ -123,12 +123,15 @@
 
     $('#recentCount').textContent = all.length ? '共 ' + all.length + ' 个文档' : '';
     renderRecentFilter(all);
+    // 一个文档都没有时不显示筛选条 —— 全是禁用状态，看着像坏了
+    const fb = $('#recentFilter');
+    if (fb) fb.style.display = all.length ? '' : 'none';
 
     const box = $('#recentList');
     if (!list.length) {
       box.innerHTML = '<div class="empty">' + ((kw || recentType !== 'all')
         ? '没有匹配的文档'
-        : '还没有文档，点击上方「新建」或「模板」开始吧') + '</div>';
+        : '还没有文档，用上面的「新建」或下面的「模板库」开始吧') + '</div>';
       return;
     }
 
