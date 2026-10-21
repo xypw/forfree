@@ -106,7 +106,10 @@
     }
     function parsePrimary() {
       const tk = peek();
-      if (!tk) return { t: 'lit', v: 0 };
+      // 公式写到一半（"=1+"、"=SUM("、"=(1+2"）必须报错。
+      // 原来这里在 EOF 时返回字面量 0，于是 "=1+" 静默算出 1、"=SUM(" 算出 0，
+      // 用户看到的是一本正经的错误数字 —— 比报错危险得多。
+      if (!tk) throw new Error('公式不完整');
       if (tk.k === 'num') { eat(); return { t: 'lit', v: tk.v }; }
       if (tk.k === 'str') { eat(); return { t: 'lit', v: tk.v }; }
       if (tk.k === 'bool') { eat(); return { t: 'lit', v: tk.v }; }
@@ -121,16 +124,18 @@
             args.push(parseExpr());
             while (peek() && peek().k === 'op' && peek().v === ',') { eat(); if (peek() && peek().k === 'op' && peek().v === ')') break; args.push(parseExpr()); }
           }
-          eat(')');
+          if (!eat(')')) throw new Error('缺少右括号');
           return { t: 'call', name: tk.v, args: args };
         }
         return { t: 'name', v: tk.v };
       }
-      if (tk.k === 'op' && tk.v === '(') { eat(); const e = parseExpr(); eat(')'); return e; }
-      eat();
-      return { t: 'lit', v: 0 };
+      if (tk.k === 'op' && tk.v === '(') { eat(); const e = parseExpr(); if (!eat(')')) throw new Error('缺少右括号'); return e; }
+      throw new Error('无法识别的符号：' + tk.v);
     }
-    return parseExpr();
+    const ast = parseExpr();
+    // 顶层必须把 token 吃干净，否则 "=1 2" 这类输入会只取前半段
+    if (p < tokens.length) throw new Error('公式末尾有多余内容');
+    return ast;
   }
 
   const num = (v) => (typeof v === 'number' ? v : (v === '' || v == null ? 0 : (isNaN(Number(v)) ? NaN : Number(v))));

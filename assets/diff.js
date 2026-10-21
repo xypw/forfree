@@ -115,7 +115,11 @@
   }
 
   function splitLines(text) {
-    return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const s = String(text == null ? '' : text);
+    // 空文档按 **0 行** 处理，而不是 1 个空行 —— 否则拿空文档和两行的文档对比，
+    // 第一行会被判成「修改」而不是「新增」，看起来很莫名其妙。
+    if (!s) return [];
+    return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   }
 
   /* ============================================================

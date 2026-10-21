@@ -377,6 +377,27 @@ desktop/                Windows 桌面客户端（Electron）
 1. **本地存储写满会让渲染进程静默崩溃**。自检脚本反复运行会累积大量文档与历史版本，导致 Electron 渲染进程直接挂掉，且没有任何错误输出。清理 `%APPDATA%/ForFree` 即可恢复。
 2. **`capturePage()` 会抓到旧帧**。切换视图后立刻截图，拿到的往往是上一个界面。自检里截图前先 `webContents.invalidate()` 并等待约 400ms。
 
+## 测试
+
+两层，各管一段：
+
+```bash
+cd desktop
+npm test          # 单元测试：jsdom 里跑，约 0.4 秒
+npm run self-test # 端到端自检：真 Electron 窗口 + 逐模块截图，约 2 分钟
+```
+
+**单元测试**（`desktop/tests/`）用 jsdom 加载**真实的 `index.html`**，再按其中 `<script>` 的顺序把
+`assets/*.js` 逐个 eval 进去 —— 测的是真实加载顺序和真实 DOM，不是手搓的桩。
+覆盖公式引擎、docx/xlsx/pptx 的生成与解析往返、文档对比的 LCS、文档库（含回收站 / 历史版本 /
+整库备份）、33 套模板的结构完整性。
+
+> 不适合放进单元测试的：涉及 canvas 像素的东西（PDF 渲染、缩略图、图片工具箱），
+> jsdom 没有 canvas 实现。这些由 `--self-test` 兜底。
+
+**写测试时注意**：从 jsdom 里返回的对象原型不是外层的 `Object.prototype`，
+所以不能用 `assert.deepStrictEqual` 直接比对象 —— 逐字段比。
+
 ---
 
 ## 开源协议
